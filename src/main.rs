@@ -1,3 +1,5 @@
+mod cli;
+mod commands;
 mod errors;
 mod installed;
 mod paths;
@@ -29,7 +31,5 @@ fn main() {
 }
 
 fn run_cli() -> anyhow::Result<()> {
-    let paths = paths::ElvmPaths::from_env()?;
-    println!("{}", paths.root().display());
-    Ok(())
+    cli::run()
 }

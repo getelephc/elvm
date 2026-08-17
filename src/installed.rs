@@ -64,7 +64,6 @@ impl Installed {
 }
 
 /// True when a version directory holds the binary and every bridge archive.
-#[allow(dead_code)]
 pub fn is_complete(dir: &Path) -> bool {
     dir.join("elephc").is_file() && BRIDGE_ARCHIVES.iter().all(|a| dir.join(a).is_file())
 }
