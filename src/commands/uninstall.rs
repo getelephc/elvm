@@ -6,7 +6,9 @@ pub fn run(paths: &ElvmPaths, raw: &str) -> anyhow::Result<()> {
     let installed = Installed::scan(paths)?;
     let name = installed
         .resolve_name(&VersionRequest::parse(raw))
-        .ok_or_else(|| anyhow::anyhow!("elephc {raw} is not installed"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("elephc {raw} is not installed\n  see what is installed: elvm ls")
+        })?;
 
     let dir = paths.version_dir(&name);
     // A linked checkout is a symlink; removing the link must not touch the

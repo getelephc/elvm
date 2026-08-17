@@ -8,7 +8,11 @@ pub fn run(paths: &ElvmPaths, version: Option<&str>) -> anyhow::Result<()> {
     let name = match version {
         Some(raw) => installed
             .resolve_name(&VersionRequest::parse(raw))
-            .ok_or_else(|| anyhow::anyhow!("elephc {raw} is not installed"))?,
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "elephc {raw} is not installed\n  install it with: elvm install {raw}"
+                )
+            })?,
         None => {
             let request = super::active_request(paths)?.ok_or_else(errors::no_version_selected)?;
             installed
