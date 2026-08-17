@@ -229,3 +229,62 @@ fn cache_clean_removes_cached_release_list_even_when_downloads_missing() {
 
     assert!(!cache_dir.join("releases.json").exists());
 }
+
+#[test]
+fn link_registers_a_checkout_as_a_named_version() {
+    let sandbox = Sandbox::new();
+    let checkout = sandbox.home().join("dev/elephc/target/release");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let binary = checkout.join("elephc");
+    std::fs::write(&binary, "#!/bin/sh\necho \"fake-elephc local $*\"\n").unwrap();
+    support::make_executable(&binary);
+    for archive in support::BRIDGE_ARCHIVES {
+        std::fs::write(checkout.join(archive), b"").unwrap();
+    }
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["link", checkout.to_str().unwrap()])
+        .assert()
+        .success();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["exec", "dev", "--", "x.php"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("fake-elephc local x.php"));
+}
+
+#[test]
+fn link_accepts_a_repository_root_and_finds_target_release() {
+    let sandbox = Sandbox::new();
+    let root = sandbox.home().join("dev/elephc");
+    let release = root.join("target/release");
+    std::fs::create_dir_all(&release).unwrap();
+    let binary = release.join("elephc");
+    std::fs::write(&binary, "#!/bin/sh\necho ok\n").unwrap();
+    support::make_executable(&binary);
+    for archive in support::BRIDGE_ARCHIVES {
+        std::fs::write(release.join(archive), b"").unwrap();
+    }
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["link", root.to_str().unwrap(), "--as", "wip"])
+        .assert()
+        .success();
+
+    let link = sandbox.elvm_dir().join("versions/wip");
+    assert_eq!(std::fs::read_link(&link).unwrap(), release);
+}
+
+#[test]
+fn link_refuses_a_directory_without_an_elephc_binary() {
+    let sandbox = Sandbox::new();
+    let empty = sandbox.home().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["link", empty.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no elephc binary"));
+}

@@ -88,6 +88,7 @@ pub fn run() -> anyhow::Result<()> {
         Command::Ls => crate::commands::ls::run(&paths),
         Command::LsRemote => crate::commands::ls_remote::run(&paths),
         Command::Uninstall { version } => crate::commands::uninstall::run(&paths, &version),
+        Command::Link { path, as_ } => crate::commands::link::run(&paths, &path, &as_),
         Command::Which { version } => crate::commands::which::run(&paths, version.as_deref()),
         Command::Current => crate::commands::current::run(&paths),
         Command::Init { shell } => crate::commands::init::run(&paths, &shell),

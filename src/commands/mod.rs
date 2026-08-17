@@ -3,6 +3,7 @@ pub mod current;
 pub mod exec;
 pub mod init;
 pub mod install;
+pub mod link;
 pub mod ls;
 pub mod ls_remote;
 pub mod uninstall;
