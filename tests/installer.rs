@@ -150,31 +150,45 @@ fn installer_executes_with_network_stub() {
     let tarball_content = std::fs::read(&tarball_path).expect("read tarball");
     let tarball_b64 = base64_encode(&tarball_content);
 
-    // Write curl stub: handle tarball download and digest file
+    // Write curl stub: handles the releases-API lookup (stdout, no -o), the
+    // tarball download, and the digest file download (both via -o).
     let curl_script = format!(
-        "#!/bin/sh\n\
-url=\"\"\n\
-for arg in \"$@\"; do\n\
-  if [ \"$prev\" != \"-o\" ] && ! echo \"$arg\" | grep -q '^-'; then\n\
-    url=\"$arg\"\n\
-  fi\n\
-  prev=\"$arg\"\n\
-done\n\
-output=\"$prev\"\n\
-mkdir -p \"$(dirname \"$output\")\"\n\
-\n\
-if echo \"$url\" | grep -q '.tar.gz$'; then\n\
-  base64 -d > \"$output\" << 'TARBALL_END'\n\
-{}\n\
-TARBALL_END\n\
-elif echo \"$url\" | grep -q '.sha256$'; then\n\
-  printf '{}  elvm-v0.1.0-aarch64-apple-darwin.tar.gz\n' > \"$output\"\n\
-else\n\
-  printf 'curl stub: unexpected url: %s\n' \"$url\" >&2\n\
-  exit 1\n\
-fi\n\
-",
-        tarball_b64, digest
+        r#"#!/bin/sh
+url=""
+output=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    output="$arg"
+  elif [ "${{arg#-}}" = "$arg" ]; then
+    url="$arg"
+  fi
+  prev="$arg"
+done
+
+case "$url" in
+  *releases/latest*)
+    printf '{{"tag_name": "v0.1.0"}}\n'
+    exit 0
+    ;;
+  *.tar.gz)
+    mkdir -p "$(dirname "$output")"
+    base64 -d > "$output" << 'TARBALL_END'
+{tarball_b64}
+TARBALL_END
+    ;;
+  *.sha256)
+    mkdir -p "$(dirname "$output")"
+    printf '%s\n' '{digest}' > "$output"
+    ;;
+  *)
+    printf 'curl stub: unexpected url: %s\n' "$url" >&2
+    exit 1
+    ;;
+esac
+"#,
+        tarball_b64 = tarball_b64,
+        digest = digest,
     );
     std::fs::write(&curl_stub, curl_script).expect("write curl stub");
 
@@ -184,16 +198,17 @@ fi\n\
     // Set up elvm installation directory
     let elvm_dir = temp_path.join("elvm");
 
-    // Run the installer with ELVM_VERSION to exercise the $repo binding on line 26
-    // (DO NOT set ELVM_VERSION would require complex JSON curl handling; real tarball+digest are real)
+    // Leave ELVM_VERSION unset so the default path runs: `${ELVM_VERSION:-$(latest_version "$repo")}`
+    // exercises latest_version(), which the curl stub serves via its releases/latest branch above.
+    let real_path = std::env::var("PATH").expect("PATH must be set");
     let output = Command::new("sh")
         .arg("install.sh")
         .arg("--no-modify-path")
         .arg("--yes")
-        .env("ELVM_VERSION", "0.1.0")
+        .env_remove("ELVM_VERSION")
         .env("ELVM_DIR", &elvm_dir)
         .env("HOME", temp_path)
-        .env("PATH", format!("{}:{}", bin_dir.display(), env!("PATH")))
+        .env("PATH", format!("{}:{}", bin_dir.display(), real_path))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("run installer");
