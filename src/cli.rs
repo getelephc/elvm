@@ -16,6 +16,7 @@ pub struct Cli {
 pub enum Command {
     /// Install a version. With no argument, read .elephc-version.
     Install {
+        #[arg(conflicts_with = "build")]
         version: Option<String>,
         /// Build from source at a tag, branch, or commit instead of downloading.
         #[arg(long, value_name = "REF")]

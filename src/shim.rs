@@ -1,3 +1,4 @@
+use crate::commands;
 use crate::errors;
 use crate::installed::Installed;
 use crate::paths::ElvmPaths;
@@ -9,18 +10,18 @@ use std::process::Command;
 
 /// Resolves a version and replaces this process with the real compiler.
 ///
-/// `execv` rather than spawning a child: the running elephc must see its own
-/// versioned path in `current_exe()` so it finds the bridge archives beside
-/// it, and signals, exit codes, and TTY behaviour must be indistinguishable
-/// from invoking elephc directly.
+/// `execv()` replaces the process image rather than spawning a child, so
+/// exit codes, signal handling (Ctrl-C during a long compile), and TTY
+/// behaviour are identical to invoking elephc directly, and no elvm process
+/// lingers between the shell and the compiler.
+///
+/// This is not what makes archive discovery work — a spawned child would
+/// also report its own path from `current_exe()`. What discovery depends on
+/// is the on-disk layout: the binary elvm invokes must be the one sitting
+/// beside its bridge archives.
 pub fn run(args: Vec<OsString>) -> anyhow::Result<Infallible> {
     let paths = ElvmPaths::from_env()?;
-    let cwd = std::env::current_dir()?;
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| cwd.clone());
-    let home = home.canonicalize().unwrap_or(home);
+    let (cwd, home) = commands::context()?;
 
     let request =
         resolve::find_request(&paths, &cwd, &home)?.ok_or_else(errors::no_version_selected)?;

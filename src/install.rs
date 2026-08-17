@@ -59,7 +59,6 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
     install_staged(
         &destination,
         staging,
-        &version.to_string(),
         "the downloaded archive is missing the elephc binary or its bridge archives",
     )?;
     println!("installed elephc {version}");
@@ -74,7 +73,6 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
 pub fn install_staged(
     destination: &Path,
     staging: tempfile::TempDir,
-    _version: &str,
     error_msg: &str,
 ) -> anyhow::Result<()> {
     if !installed::is_complete(staging.path()) {
