@@ -1,5 +1,6 @@
 mod installed;
 mod paths;
+mod resolve;
 mod version;
 
 fn main() {
