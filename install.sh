@@ -3,8 +3,6 @@
 # Pick a compiler afterwards with: elvm install latest
 set -eu
 
-REPO="illegalstudio/elvm"
-
 main() {
     modify_path=1
     assume_yes=0
@@ -19,6 +17,7 @@ main() {
 
     need curl
     need tar
+    need_digest_tool
 
     elvm_dir="${ELVM_DIR:-$HOME/.elvm}"
     target="$(detect_target)"
@@ -75,6 +74,12 @@ need() {
     command -v "$1" >/dev/null 2>&1 || err "$1 is required but was not found"
 }
 
+need_digest_tool() {
+    command -v shasum >/dev/null 2>&1 && return 0
+    command -v sha256sum >/dev/null 2>&1 && return 0
+    err "neither shasum nor sha256sum is available to verify the download"
+}
+
 detect_target() {
     os="$(uname -s)"
     arch="$(uname -m)"
@@ -87,9 +92,11 @@ detect_target() {
 }
 
 latest_version() {
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | sed -n 's/.*"tag_name" *: *"v\{0,1\}\([^"]*\)".*/\1/p' \
-        | head -n 1
+    json="$(curl -fsSL "https://api.github.com/repos/illegalstudio/elvm/releases/latest")" \
+        || err "could not reach the GitHub API to find the latest elvm version"
+    version="$(printf '%s' "$json" | sed -n 's/.*"tag_name" *: *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)"
+    [ -n "$version" ] || err "could not determine the latest elvm version"
+    printf '%s' "$version"
 }
 
 verify() {

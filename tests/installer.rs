@@ -23,8 +23,52 @@ fn installer_passes_shellcheck() {
 #[test]
 fn installer_defers_all_work_to_a_final_main_call() {
     let script = std::fs::read_to_string("install.sh").unwrap();
+
+    // Final line must be exactly main "$@"
     let last = script.trim_end().lines().last().unwrap().trim();
     assert_eq!(last, "main \"$@\"");
+
+    // Scan for top-level assignments outside functions.
+    // Variables are assigned with NAME=value; this pattern at column 0 is a violation.
+    let mut in_function = false;
+    for line in script.lines() {
+        // Track function boundaries by looking at column 0
+        if !line.is_empty() && !line.starts_with(|c: char| c.is_whitespace()) {
+            if line.ends_with(") {") {
+                in_function = true;
+                // Single-line function definitions have a } on the same line, so don't stay in_function
+                if line.contains('}') {
+                    in_function = false;
+                }
+            } else if line == "}" {
+                in_function = false;
+            }
+        }
+
+        // Skip lines that are inside functions or that have leading whitespace
+        if in_function || line.is_empty() || line.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+
+        // At column 0, outside functions: allow only specific patterns
+        // This includes single-line function definitions like: say() { ... }
+        if line.starts_with('#')
+            || line == "set -eu"
+            || line.ends_with(") {")
+            || line == "}"
+            || line == "main \"$@\""
+            || (line.contains("() {") && line.ends_with('}'))
+        {
+            continue;
+        }
+
+        // Any other pattern at column 0 is suspicious
+        panic!(
+            "found disallowed top-level statement: '{}'. Only shebangs, comments, 'set -eu', \
+             function definitions, closing braces, and 'main \"$@\"' are allowed at column 0",
+            line
+        );
+    }
 }
 
 /// The installer fetches the version manager and nothing else. If it ever
