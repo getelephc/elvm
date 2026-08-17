@@ -6,6 +6,7 @@ use crate::lock::InstallLock;
 use crate::paths::ElvmPaths;
 use crate::target;
 use semver::Version;
+use std::path::Path;
 
 /// Downloads, verifies, and atomically installs a published release.
 pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow::Result<()> {
@@ -55,6 +56,21 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
         .tempdir_in(paths.tmp())?;
     archive::extract_tar_gz(&cached, staging.path())?;
 
+    install_staged(&destination, staging, &version.to_string())?;
+    println!("installed elephc {version}");
+    Ok(())
+}
+
+/// Completes an installation by verifying completeness, keeping the staging
+/// directory, atomically replacing the destination, and reporting success.
+///
+/// This defers all destructive operations until after the completeness check,
+/// keeping a working prior installation in place until the last moment.
+pub fn install_staged(
+    destination: &Path,
+    staging: tempfile::TempDir,
+    _version: &str,
+) -> anyhow::Result<()> {
     if !installed::is_complete(staging.path()) {
         anyhow::bail!("the downloaded archive is missing the elephc binary or its bridge archives");
     }
@@ -72,9 +88,8 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
     // swap (no atomic directory replace exists in POSIX) can offer.
     let staged = staging.keep();
     if destination.exists() {
-        std::fs::remove_dir_all(&destination)?;
+        std::fs::remove_dir_all(destination)?;
     }
-    std::fs::rename(staged, &destination)?;
-    println!("installed elephc {version}");
+    std::fs::rename(staged, destination)?;
     Ok(())
 }

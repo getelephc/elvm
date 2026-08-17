@@ -1,4 +1,4 @@
-use crate::installed::{self, BRIDGE_ARCHIVES};
+use crate::installed::BRIDGE_ARCHIVES;
 use crate::lock::InstallLock;
 use crate::paths::ElvmPaths;
 use std::path::Path;
@@ -32,13 +32,10 @@ pub fn from_source(paths: &ElvmPaths, git_ref: &str, force: bool) -> anyhow::Res
 
     let name = git_ref.trim_start_matches('v').to_string();
     let destination = paths.version_dir(&name);
-    if destination.exists() {
-        if !force {
-            anyhow::bail!(
-                "elephc {name} is already installed\n  rebuild with: elvm install --build {git_ref} --force"
-            );
-        }
-        std::fs::remove_dir_all(&destination)?;
+    if destination.exists() && !force {
+        anyhow::bail!(
+            "elephc {name} is already installed\n  rebuild with: elvm install --build {git_ref} --force"
+        );
     }
 
     let mirror = paths.cache().join("elephc.git");
@@ -85,15 +82,7 @@ pub fn from_source(paths: &ElvmPaths, git_ref: &str, force: bool) -> anyhow::Res
         }
     }
 
-    if !installed::is_complete(staging.path()) {
-        anyhow::bail!("the build did not produce every bridge archive; see the cargo output above");
-    }
-
-    let staged = staging.keep();
-    if destination.exists() {
-        std::fs::remove_dir_all(&destination)?;
-    }
-    std::fs::rename(staged, &destination)?;
+    crate::install::install_staged(&destination, staging, &name)?;
     println!("installed elephc {name} from source");
     Ok(())
 }
