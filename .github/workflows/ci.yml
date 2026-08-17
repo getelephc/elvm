@@ -19,6 +19,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: End-to-end compile with a real elephc
+        if: matrix.os == 'macos-14'
+        run: cargo test --test e2e_macos -- --ignored
       - name: Lint the installer
         if: runner.os == 'Linux'
         run: shellcheck -s sh install.sh
