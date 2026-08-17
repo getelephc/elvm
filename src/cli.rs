@@ -86,9 +86,15 @@ pub fn run() -> anyhow::Result<()> {
         },
         Command::Use { version, global } => crate::commands::use_::run(&paths, &version, global),
         Command::Ls => crate::commands::ls::run(&paths),
+        Command::LsRemote => crate::commands::ls_remote::run(&paths),
+        Command::Uninstall { version } => crate::commands::uninstall::run(&paths, &version),
         Command::Which { version } => crate::commands::which::run(&paths, version.as_deref()),
         Command::Current => crate::commands::current::run(&paths),
         Command::Init { shell } => crate::commands::init::run(&paths, &shell),
+        Command::Exec { version, args } => crate::commands::exec::run(&paths, &version, &args),
+        Command::Cache { command } => match command {
+            crate::cli::CacheCommand::Clean => crate::commands::cache::clean(&paths),
+        },
         _ => anyhow::bail!("not implemented yet"),
     }
 }

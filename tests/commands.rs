@@ -135,3 +135,65 @@ fn init_prints_a_path_line_for_the_shell() {
         .stdout(predicates::str::contains("export PATH="))
         .stdout(predicates::str::contains("/bin:$PATH"));
 }
+
+#[test]
+fn uninstall_removes_a_version() {
+    let sandbox = Sandbox::new();
+    sandbox.fake_elephc("0.26.4");
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["uninstall", "0.26.4"])
+        .assert()
+        .success();
+
+    assert!(!sandbox.elvm_dir().join("versions/0.26.4").exists());
+}
+
+#[test]
+fn uninstall_refuses_a_version_that_is_not_installed() {
+    let sandbox = Sandbox::new();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["uninstall", "0.26.4"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not installed"));
+}
+
+#[test]
+fn exec_runs_a_specific_version_without_changing_the_selection() {
+    let sandbox = Sandbox::new();
+    sandbox.fake_elephc("0.26.4");
+    sandbox.fake_elephc("0.25.2");
+    sandbox.set_global_version("0.26.4\n");
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["exec", "0.25.2", "--", "hello.php"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("fake-elephc 0.25.2 hello.php"));
+
+    assert_eq!(
+        std::fs::read_to_string(sandbox.elvm_dir().join("version")).unwrap(),
+        "0.26.4\n"
+    );
+}
+
+#[test]
+fn cache_clean_empties_the_downloads_directory() {
+    let sandbox = Sandbox::new();
+    let downloads = sandbox.elvm_dir().join("cache/downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    std::fs::write(
+        downloads.join("elephc-v0.26.4-aarch64-apple-darwin.tar.gz"),
+        b"x",
+    )
+    .unwrap();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["cache", "clean"])
+        .assert()
+        .success();
+
+    assert_eq!(std::fs::read_dir(&downloads).unwrap().count(), 0);
+}

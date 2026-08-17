@@ -1,7 +1,11 @@
+pub mod cache;
 pub mod current;
+pub mod exec;
 pub mod init;
 pub mod install;
 pub mod ls;
+pub mod ls_remote;
+pub mod uninstall;
 pub mod use_;
 pub mod which;
 
