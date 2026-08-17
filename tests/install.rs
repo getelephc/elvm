@@ -376,6 +376,131 @@ fn ls_remote_marks_releases_with_no_binary_for_this_platform() {
         ));
 }
 
+/// The default (grouped) shape: the newest (major, minor) series listed
+/// patch by patch, every older series collapsed to its highest patch with a
+/// `(+N)` count of what's beneath it, and a footer naming both counts and
+/// the `--all` flag.
+#[test]
+fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start_many(
+        &["0.24.0", "0.25.0", "0.25.1", "0.25.2", "0.26.0", "0.26.1"],
+        None,
+    );
+
+    let assert = elvm(&sandbox, &upstream)
+        .arg("ls-remote")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    // Newest series (0.26) is expanded patch by patch, with no (+N) suffix,
+    // and only its first (highest) line carries the "latest" marker.
+    assert!(stdout.contains("0.26.1  ← latest"), "{stdout}");
+    assert!(stdout.contains("0.26.0"), "{stdout}");
+    assert!(!stdout.contains("0.26.0  (+"), "{stdout}");
+
+    // Older series collapse to their highest patch with a count of the rest;
+    // the patches beneath it must not get their own line.
+    assert!(stdout.contains("0.25.2  (+2)"), "{stdout}");
+    assert!(!stdout.contains("0.25.0"), "{stdout}");
+    assert!(!stdout.contains("0.25.1"), "{stdout}");
+
+    // A series with only one patch collapses with no (+N) suffix at all.
+    assert!(stdout.contains("0.24.0"), "{stdout}");
+    assert!(!stdout.contains("0.24.0  (+"), "{stdout}");
+
+    // Footer names both counts and the flag to see everything.
+    assert!(
+        stdout.contains("4 rows, 6 releases — elvm ls-remote --all for every patch"),
+        "{stdout}"
+    );
+}
+
+/// `--all` lists every published patch, flat: no collapsing, no "latest"
+/// marker, no summary footer — just newest-first with the usual `*`.
+#[test]
+fn ls_remote_all_lists_every_published_patch_with_no_grouping() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start_many(&["0.24.0", "0.25.0", "0.25.1", "0.26.0"], None);
+
+    let assert = elvm(&sandbox, &upstream)
+        .args(["ls-remote", "--all"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    for version in ["0.24.0", "0.25.0", "0.25.1", "0.26.0"] {
+        assert!(stdout.contains(version), "missing {version} in:\n{stdout}");
+    }
+    assert!(!stdout.contains("(+"), "{stdout}");
+    assert!(!stdout.contains("← latest"), "{stdout}");
+    assert!(!stdout.contains("rows,"), "{stdout}");
+
+    // Newest first.
+    let pos = |needle: &str| stdout.find(needle).unwrap();
+    assert!(pos("0.26.0") < pos("0.25.1"));
+    assert!(pos("0.25.1") < pos("0.25.0"));
+    assert!(pos("0.25.0") < pos("0.24.0"));
+}
+
+/// Guards the pagination bug directly: GitHub returns releases 100 to a
+/// page, and `github::list_releases` used to request only page 1, silently
+/// dropping everything older. Page 1 here is a full 100-entry page (which is
+/// what makes a correct client request page 2 at all); page 2 carries an old
+/// version that only pagination can surface. Verified this fails without the
+/// pagination loop — see the report for the actual output of that run.
+#[test]
+fn ls_remote_all_lists_a_version_that_only_exists_on_the_second_page() {
+    let sandbox = Sandbox::new();
+    let server = MockServer::start();
+
+    let page1_entries: Vec<String> = (0..100)
+        .map(|i| format!(r#"{{"tag_name":"v0.20.{i}","assets":[]}}"#))
+        .collect();
+    let page1 = format!("[{}]", page1_entries.join(","));
+    let page2 = r#"[
+        {"tag_name":"v0.16.0","assets":[]},
+        {"tag_name":"v0.16.1","assets":[]}
+    ]"#;
+
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/repos/illegalstudio/elephc/releases")
+            .query_param("page", "1");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(page1);
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/repos/illegalstudio/elephc/releases")
+            .query_param("page", "2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(page2);
+    });
+
+    let sandbox_home = sandbox.home();
+    let assert = Command::cargo_bin("elvm")
+        .unwrap()
+        .env("ELVM_DIR", sandbox.elvm_dir())
+        .env("HOME", &sandbox_home)
+        .env("ELVM_GITHUB_API", server.base_url())
+        .env("ELVM_TARGET", elvm_target())
+        .env_remove("ELEPHC_VERSION")
+        .current_dir(&sandbox_home)
+        .args(["ls-remote", "--all"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    assert!(
+        stdout.contains("0.16.0") && stdout.contains("0.16.1"),
+        "expected page-2-only versions 0.16.0/0.16.1 in output, pagination is broken:\n{stdout}"
+    );
+}
+
 /// IMPORTANT 3 / spec §4.5 step 3: a tarball already verified in
 /// `cache/downloads/` must be reused rather than re-downloaded. Installs
 /// once for real, then reinstalls with `--force` against a *second* upstream

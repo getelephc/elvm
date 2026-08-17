@@ -97,11 +97,25 @@ pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
     Ok(releases)
 }
 
+/// Requests per page, and the hard cap on pages fetched.
+///
+/// The cap is a backstop against a misbehaving API returning full pages
+/// forever, not a real limit: 1000 releases is far beyond what elephc has
+/// published, or is likely to for a long time.
+const PER_PAGE: u32 = 100;
+const MAX_PAGES: u32 = 10;
+
 /// Lists releases, serving a cached response when it is fresh enough.
 ///
 /// Unauthenticated GitHub allows 60 requests per hour per IP, which CI runners
 /// on shared egress do exhaust, so responses are cached and a token is sent
 /// when the environment provides one.
+///
+/// GitHub paginates at 100 releases per page; elephc has published more than
+/// that, so a single request silently drops the oldest releases. This fetches
+/// pages until one comes back short (or empty), merging them into one JSON
+/// array before caching and parsing — `parse_releases` still sees exactly the
+/// shape it always has, just assembled from more than one response.
 pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Release>> {
     let cache = paths.releases_json();
     if !refresh {
@@ -121,35 +135,50 @@ pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Rel
         }
     }
 
-    let url = format!("{}/repos/{REPO}/releases?per_page=100", api_base());
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("elvm/", env!("CARGO_PKG_VERSION")))
         .build()?;
+    let token = github_token();
 
-    let mut request = client.get(&url);
-    if let Some(token) = github_token() {
-        request = request.bearer_auth(token);
-    }
-
-    let response = request.send()?;
-    if response.status() == reqwest::StatusCode::FORBIDDEN {
-        let reset = response
-            .headers()
-            .get("x-ratelimit-reset")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown");
-        anyhow::bail!(
-            "GitHub rate limit exhausted (resets at unix time {reset})\n  \
-             set GITHUB_TOKEN or GH_TOKEN to raise the limit"
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let url = format!(
+            "{}/repos/{REPO}/releases?per_page={PER_PAGE}&page={page}",
+            api_base()
         );
+        let mut request = client.get(&url);
+        if let Some(token) = &token {
+            request = request.bearer_auth(token);
+        }
+
+        let response = request.send()?;
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            let reset = response
+                .headers()
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown");
+            anyhow::bail!(
+                "GitHub rate limit exhausted (resets at unix time {reset})\n  \
+                 set GITHUB_TOKEN or GH_TOKEN to raise the limit"
+            );
+        }
+        let body = response.error_for_status()?.text()?;
+        let page_entries: Vec<serde_json::Value> = serde_json::from_str(&body)?;
+        let page_len = page_entries.len();
+        entries.extend(page_entries);
+        if page_len < PER_PAGE as usize {
+            break;
+        }
     }
-    let body = response.error_for_status()?.text()?;
-    let releases = parse_releases(&body)?;
+
+    let merged = serde_json::to_string(&serde_json::Value::Array(entries))?;
+    let releases = parse_releases(&merged)?;
 
     if let Some(parent) = cache.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&cache, &body);
+    let _ = std::fs::write(&cache, &merged);
     Ok(releases)
 }
 

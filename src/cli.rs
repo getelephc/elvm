@@ -34,7 +34,11 @@ pub enum Command {
     /// List installed versions.
     Ls,
     /// List versions published upstream.
-    LsRemote,
+    LsRemote {
+        /// List every published patch instead of grouping older series.
+        #[arg(long)]
+        all: bool,
+    },
     /// Remove an installed version.
     Uninstall { version: String },
     /// Register a local checkout as a named version.
@@ -87,7 +91,7 @@ pub fn run() -> anyhow::Result<()> {
         },
         Command::Use { version, global } => crate::commands::use_::run(&paths, &version, global),
         Command::Ls => crate::commands::ls::run(&paths),
-        Command::LsRemote => crate::commands::ls_remote::run(&paths),
+        Command::LsRemote { all } => crate::commands::ls_remote::run(&paths, all),
         Command::Uninstall { version } => crate::commands::uninstall::run(&paths, &version),
         Command::Link { path, as_ } => crate::commands::link::run(&paths, &path, &as_),
         Command::Which { version } => crate::commands::which::run(&paths, version.as_deref()),
