@@ -401,6 +401,14 @@ fn a_verified_cached_tarball_is_reused_instead_of_re_downloaded() {
     );
     let digest = sha256_hex(&std::fs::read(&cached).unwrap());
 
+    // Take the first server down and drop the cached release list it served:
+    // otherwise `list_releases` keeps answering from its 600s cache and the
+    // asset URLs it hands back still point at server #1, which would happily
+    // serve them. That would make the assertion below trivially true whether
+    // or not cache-reuse is implemented at all.
+    drop(first);
+    std::fs::remove_file(sandbox.elvm_dir().join("cache/releases.json")).unwrap();
+
     // A fresh server: same digest (matching what's already cached), but the
     // tarball body route fails outright if it is ever requested.
     let server = MockServer::start();
