@@ -39,15 +39,44 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
     }
 
     let shim = bin.join("elephc");
-    if shim.exists() {
-        println!("✓ shim present at {}", shim.display());
-    } else {
-        problems += 1;
-        println!("✗ shim missing at {}", shim.display());
-        println!(
-            "  reinstall elvm, or recreate it: ln -s elvm {}",
-            shim.display()
-        );
+    // `shim.exists()` alone follows the symlink and only proves *something*
+    // is there: a shim retargeted at a stale or unrelated file that still
+    // happens to exist would report ✓ even though it is not the relative
+    // `elvm` link the installer creates (§4.3). Reading the link itself
+    // catches that; a missing or non-symlink shim still reports the same
+    // "missing" fix.
+    match std::fs::read_link(&shim) {
+        Ok(target) if target == std::path::Path::new("elvm") => {
+            println!("✓ shim present at {}", shim.display());
+        }
+        Ok(target) => {
+            problems += 1;
+            println!(
+                "✗ shim at {} points at {} instead of elvm",
+                shim.display(),
+                target.display()
+            );
+            println!("  recreate it with: ln -sf elvm {}", shim.display());
+        }
+        Err(_) => {
+            problems += 1;
+            println!("✗ shim missing at {}", shim.display());
+            println!(
+                "  reinstall elvm, or recreate it: ln -sf elvm {}",
+                shim.display()
+            );
+        }
+    }
+
+    let root = paths.root();
+    if root.exists() {
+        if let Err(err) = check_writable(root) {
+            problems += 1;
+            println!("✗ {} is not writable: {err}", root.display());
+            println!("  fix its permissions: chmod u+w {}", root.display());
+        } else {
+            println!("✓ {} is writable", root.display());
+        }
     }
 
     println!("✓ host target: {}", target::host()?);
@@ -90,6 +119,14 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
     }
     println!("\nno problems found");
     Ok(())
+}
+
+/// A real round-trip rather than a permission-bit check: bits alone don't
+/// account for ownership, ACLs, or a read-only filesystem.
+fn check_writable(root: &std::path::Path) -> std::io::Result<()> {
+    let probe = root.join(".elvm-doctor-writable");
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)
 }
 
 /// macOS only, and normally never true: elvm downloads with its own HTTP
