@@ -1,4 +1,5 @@
 mod archive;
+mod build;
 mod cli;
 mod commands;
 mod download;

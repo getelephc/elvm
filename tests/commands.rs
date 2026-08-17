@@ -288,3 +288,28 @@ fn link_refuses_a_directory_without_an_elephc_binary() {
         .failure()
         .stderr(predicates::str::contains("no elephc binary"));
 }
+
+#[test]
+fn build_reports_a_missing_toolchain_before_cloning() {
+    let sandbox = Sandbox::new();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["install", "--build", "v0.26.4"])
+        .env("PATH", "/nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cargo"));
+}
+
+#[test]
+fn build_refuses_when_the_version_directory_exists() {
+    let sandbox = Sandbox::new();
+    sandbox.fake_elephc("main");
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["install", "--build", "main"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("already installed"))
+        .stderr(predicates::str::contains("--force"));
+}

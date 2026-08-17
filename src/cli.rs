@@ -81,7 +81,7 @@ pub fn run() -> anyhow::Result<()> {
             build,
             force,
         } => match build {
-            Some(_) => anyhow::bail!("--build is not implemented yet"),
+            Some(git_ref) => crate::build::from_source(&paths, &git_ref, force),
             None => crate::commands::install::run(&paths, version.as_deref(), force),
         },
         Command::Use { version, global } => crate::commands::use_::run(&paths, &version, global),
