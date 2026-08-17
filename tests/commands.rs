@@ -1,7 +1,6 @@
 mod support;
 
 use assert_cmd::Command;
-use predicates::prelude::PredicateBooleanExt;
 use support::Sandbox;
 
 fn elvm(sandbox: &Sandbox, cwd: &std::path::Path) -> Command {
@@ -158,7 +157,35 @@ fn uninstall_refuses_a_version_that_is_not_installed() {
         .args(["uninstall", "0.26.4"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("not installed"));
+        .stderr(predicates::str::contains("not installed"))
+        .stderr(predicates::str::contains("elvm ls"));
+}
+
+/// IMPORTANT 5: every resolution failure names the fix, per spec §4.4. These
+/// three commands used to hand-roll a bare "elephc X is not installed" with
+/// no fix line at all.
+#[test]
+fn which_names_the_fix_for_a_version_that_is_not_installed() {
+    let sandbox = Sandbox::new();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["which", "0.26.4"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not installed"))
+        .stderr(predicates::str::contains("elvm install 0.26.4"));
+}
+
+#[test]
+fn exec_names_the_fix_for_a_version_that_is_not_installed() {
+    let sandbox = Sandbox::new();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["exec", "0.26.4", "--", "x.php"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not installed"))
+        .stderr(predicates::str::contains("elvm install 0.26.4"));
 }
 
 #[test]
@@ -255,6 +282,75 @@ fn link_registers_a_checkout_as_a_named_version() {
         .stdout(predicates::str::contains("fake-elephc local x.php"));
 }
 
+/// IMPORTANT 2: a `versions/<alias>` symlink whose target has been deleted
+/// used to become invisible to `Installed::scan` (`entry.path().is_dir()`
+/// follows symlinks, so a broken one reads as "not a directory" and is
+/// skipped). `ls` reported "no versions installed", `doctor` agreed, and
+/// `uninstall dev` said "dev is not installed" while `link ... --as dev`
+/// said "dev already exists" — a loop with no exit except deleting the
+/// symlink by hand. This pins the whole recovery cycle: link, delete the
+/// target out from under it, and confirm `ls` still lists the name and
+/// `doctor` still reports it before `uninstall` removes it for good.
+#[test]
+fn a_dangling_linked_checkout_stays_visible_and_recoverable() {
+    let sandbox = Sandbox::new();
+    let checkout = sandbox.home().join("dev-checkout");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let binary = checkout.join("elephc");
+    std::fs::write(&binary, "#!/bin/sh\necho ok\n").unwrap();
+    support::make_executable(&binary);
+    for archive in support::BRIDGE_ARCHIVES {
+        std::fs::write(checkout.join(archive), b"").unwrap();
+    }
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["link", checkout.to_str().unwrap(), "--as", "dev"])
+        .assert()
+        .success();
+
+    let link = sandbox.elvm_dir().join("versions/dev");
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "the link must exist before its target is deleted"
+    );
+
+    // Delete what the symlink points at, leaving it dangling.
+    std::fs::remove_dir_all(&checkout).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "the dangling symlink itself must still be on disk"
+    );
+
+    // `ls` must still list the alias rather than reporting nothing installed.
+    elvm(&sandbox, &sandbox.home())
+        .arg("ls")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dev"));
+
+    // `doctor` must report it too, not stay silent about a broken alias.
+    elvm(&sandbox, &sandbox.home())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", sandbox.elvm_dir().join("bin").display()),
+        )
+        .arg("doctor")
+        .assert()
+        .stdout(predicates::str::contains("dev"));
+
+    // `uninstall` can now find and remove it — before this fix, the only
+    // recovery was `rm ~/.elvm/versions/dev` by hand.
+    elvm(&sandbox, &sandbox.home())
+        .args(["uninstall", "dev"])
+        .assert()
+        .success();
+
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "uninstall must remove the dangling symlink itself"
+    );
+}
+
 #[test]
 fn link_accepts_a_repository_root_and_finds_target_release() {
     let sandbox = Sandbox::new();
@@ -302,6 +398,20 @@ fn build_reports_a_missing_toolchain_before_cloning() {
         .stderr(predicates::str::contains("cargo"));
 }
 
+/// `elvm install 0.26.4 --build v0.25.2` used to silently ignore the
+/// positional version and build v0.25.2 instead. clap now refuses the
+/// combination outright.
+#[test]
+fn install_refuses_a_version_together_with_build() {
+    let sandbox = Sandbox::new();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["install", "0.26.4", "--build", "v0.25.2"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot be used with"));
+}
+
 #[test]
 fn build_refuses_when_the_version_directory_exists() {
     let sandbox = Sandbox::new();
@@ -324,8 +434,72 @@ fn doctor_reports_a_missing_path_entry() {
         .arg("doctor")
         .assert()
         .failure()
-        .stdout(predicates::str::contains("not on PATH").or(predicates::str::contains("PATH")))
+        .stdout(predicates::str::contains("is not on PATH"))
         .stdout(predicates::str::contains("elvm init"));
+}
+
+/// IMPORTANT 4: `doctor` used to check only `shim.exists()`, which follows
+/// the symlink, so a shim retargeted at some *other* file that still
+/// happens to exist on disk read as ✓ even though it does not point at the
+/// relative `elvm` link the installer creates (§4.3). This shim resolves
+/// fine — `old-elvm` is really there — but is not `elvm`.
+#[test]
+fn doctor_reports_a_shim_pointing_at_the_wrong_target() {
+    let sandbox = Sandbox::new();
+    let bin = sandbox.elvm_dir().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let stale = bin.join("old-elvm");
+    std::fs::write(&stale, b"#!/bin/sh\n").unwrap();
+    support::make_executable(&stale);
+    std::os::unix::fs::symlink("old-elvm", bin.join("elephc")).unwrap();
+
+    elvm(&sandbox, &sandbox.home())
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("instead of elvm"))
+        .stdout(predicates::str::contains("ln -sf elvm"));
+}
+
+/// IMPORTANT 4: spec §5.5's "writable ~/.elvm" check, previously missing.
+#[test]
+fn doctor_reports_an_unwritable_root() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let root = sandbox.elvm_dir();
+    let original = std::fs::metadata(&root).unwrap().permissions();
+    let mut readonly = original.clone();
+    readonly.set_mode(0o555);
+    std::fs::set_permissions(&root, readonly).unwrap();
+
+    // Permission bits don't enforce anything for a process that can bypass
+    // them (root, or some CI sandboxes); if that's the case here, restore
+    // and skip rather than assert something that isn't actually true.
+    let probe = root.join(".doctor-test-probe");
+    let bypassed = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    if bypassed {
+        std::fs::set_permissions(&root, original).unwrap();
+        eprintln!(
+            "write access to a 0o555 directory was not denied (likely running as root); \
+             skipping doctor_reports_an_unwritable_root"
+        );
+        return;
+    }
+
+    elvm(&sandbox, &sandbox.home())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", root.join("bin").display()),
+        )
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("is not writable"))
+        .stdout(predicates::str::contains("chmod"));
+
+    std::fs::set_permissions(&root, original).unwrap();
 }
 
 #[test]
@@ -366,5 +540,7 @@ fn doctor_warns_when_another_elephc_shadows_the_shim() {
         )
         .arg("doctor")
         .assert()
-        .stdout(predicates::str::contains("shadow").or(predicates::str::contains("before")));
+        .stdout(predicates::str::contains(
+            "comes before the shim and will shadow it",
+        ));
 }

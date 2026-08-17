@@ -53,9 +53,9 @@ impl Sandbox {
         fs::write(self.elvm_dir().join("version"), contents).unwrap();
     }
 
-    /// Creates the `elephc` shim: a relative-target symlink to the elvm test
-    /// binary, the same shape the installer creates. Tests invoke this path so
-    /// that argv[0] dispatch is exercised for real rather than simulated.
+    /// Creates the `elephc` shim: a symlink to the elvm test binary. Tests
+    /// invoke this path so that argv[0] dispatch is exercised for real
+    /// rather than simulated.
     pub fn shim(&self) -> PathBuf {
         let bin = self.elvm_dir().join("bin");
         fs::create_dir_all(&bin).unwrap();
