@@ -1,0 +1,11 @@
+name = "elvm-installer"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+routes = [
+  { pattern = "get.elephc.dev", custom_domain = true }
+]
+
+rules = [
+  { type = "Text", globs = ["**/*.sh"], fallthrough = true }
+]
