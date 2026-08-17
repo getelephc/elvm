@@ -1,6 +1,7 @@
 mod support;
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use support::Sandbox;
 
 fn elvm(sandbox: &Sandbox, cwd: &std::path::Path) -> Command {
@@ -312,4 +313,58 @@ fn build_refuses_when_the_version_directory_exists() {
         .failure()
         .stderr(predicates::str::contains("already installed"))
         .stderr(predicates::str::contains("--force"));
+}
+
+#[test]
+fn doctor_reports_a_missing_path_entry() {
+    let sandbox = Sandbox::new();
+
+    elvm(&sandbox, &sandbox.home())
+        .env("PATH", "/usr/bin:/bin")
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("not on PATH").or(predicates::str::contains("PATH")))
+        .stdout(predicates::str::contains("elvm init"));
+}
+
+#[test]
+fn doctor_reports_an_incomplete_version() {
+    let sandbox = Sandbox::new();
+    let dir = sandbox.elvm_dir().join("versions/0.26.4");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("elephc"), "#!/bin/sh\n").unwrap();
+    support::make_executable(&dir.join("elephc"));
+
+    elvm(&sandbox, &sandbox.home())
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", sandbox.elvm_dir().join("bin").display()),
+        )
+        .arg("doctor")
+        .assert()
+        .stdout(predicates::str::contains("0.26.4"))
+        .stdout(predicates::str::contains("bridge archive"));
+}
+
+#[test]
+fn doctor_warns_when_another_elephc_shadows_the_shim() {
+    let sandbox = Sandbox::new();
+    let brew = sandbox.dir.path().join("brew/bin");
+    std::fs::create_dir_all(&brew).unwrap();
+    std::fs::write(brew.join("elephc"), "#!/bin/sh\n").unwrap();
+    support::make_executable(&brew.join("elephc"));
+
+    elvm(&sandbox, &sandbox.home())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                brew.display(),
+                sandbox.elvm_dir().join("bin").display()
+            ),
+        )
+        .arg("doctor")
+        .assert()
+        .stdout(predicates::str::contains("shadow").or(predicates::str::contains("before")));
 }

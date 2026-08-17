@@ -91,11 +91,12 @@ pub fn run() -> anyhow::Result<()> {
         Command::Link { path, as_ } => crate::commands::link::run(&paths, &path, &as_),
         Command::Which { version } => crate::commands::which::run(&paths, version.as_deref()),
         Command::Current => crate::commands::current::run(&paths),
+        Command::Doctor => crate::commands::doctor::run(&paths),
         Command::Init { shell } => crate::commands::init::run(&paths, &shell),
+        Command::SelfUpdate => crate::commands::self_update::run(&paths),
         Command::Exec { version, args } => crate::commands::exec::run(&paths, &version, &args),
         Command::Cache { command } => match command {
             crate::cli::CacheCommand::Clean => crate::commands::cache::clean(&paths),
         },
-        _ => anyhow::bail!("not implemented yet"),
     }
 }

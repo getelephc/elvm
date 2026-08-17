@@ -1,11 +1,13 @@
 pub mod cache;
 pub mod current;
+pub mod doctor;
 pub mod exec;
 pub mod init;
 pub mod install;
 pub mod link;
 pub mod ls;
 pub mod ls_remote;
+pub mod self_update;
 pub mod uninstall;
 pub mod use_;
 pub mod which;
