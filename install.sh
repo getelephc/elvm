@@ -30,8 +30,10 @@ main() {
     trap 'rm -rf "$tmp"' EXIT
 
     say "downloading elvm ${version} for ${target}"
-    curl -fsSL "${base}/${tarball}" -o "${tmp}/${tarball}"
-    curl -fsSL "${base}/${tarball}.sha256" -o "${tmp}/${tarball}.sha256"
+    curl -fsSL "${base}/${tarball}" -o "${tmp}/${tarball}" \
+        || err "could not download ${base}/${tarball}"
+    curl -fsSL "${base}/${tarball}.sha256" -o "${tmp}/${tarball}.sha256" \
+        || err "could not download ${base}/${tarball}.sha256"
 
     verify "$tmp" "$tarball"
 
@@ -136,10 +138,15 @@ configure_path() {
     if [ "$yes" -eq 0 ]; then
         if [ -t 0 ]; then
             printf 'Add elvm to PATH in %s? [y/N] ' "$profile"
-            read -r answer
-        elif [ -r /dev/tty ]; then
+            read -r answer || answer=""
+        elif { printf '' > /dev/tty; } 2>/dev/null; then
+            # `[ -r /dev/tty ]` would pass here too: the device node is
+            # world-readable even with no controlling terminal, so the
+            # earlier write below fails with ENXIO under `set -eu` and
+            # aborts the whole script after the binary is already
+            # installed. Opening it is the only way to tell.
             printf 'Add elvm to PATH in %s? [y/N] ' "$profile" > /dev/tty
-            read -r answer < /dev/tty
+            read -r answer < /dev/tty || answer=""
         else
             say ""
             say "add this line to ${profile} yourself:"
@@ -147,7 +154,7 @@ configure_path() {
             return 0
         fi
         case "$answer" in
-            y|Y|yes|YES) ;;
+            [Yy]|[Yy][Ee][Ss]) ;;
             *) say "skipped; add it yourself:  ${line}"; return 0 ;;
         esac
     fi

@@ -249,6 +249,174 @@ esac
     );
 }
 
+/// CRITICAL 1: `[ -r /dev/tty ]` succeeds even with no controlling terminal —
+/// the device node is world-readable regardless — so the `printf … >
+/// /dev/tty` that followed it failed with ENXIO, and under `set -eu` that
+/// aborted the whole script *after* the binary was already installed. This
+/// is unreachable from a plain child process on macOS or Linux: a `Command`
+/// spawned from `cargo test` normally still has a controlling terminal (or
+/// none at all, in which case `/dev/tty` opens fail the same way on the host
+/// too, which would make this test flaky rather than targeted). `setsid` is
+/// not available on macOS and a manual double-fork is not reliably
+/// achievable from Rust in-process, so this test runs install.sh inside a
+/// `docker run` container instead: a container's init process has no
+/// controlling terminal even without `-t`, which reproduces the field
+/// report exactly (verified manually against an Alpine container before
+/// this test was written). Skips outright if docker is not available.
+#[test]
+fn installer_succeeds_with_no_controlling_terminal() {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use hex::encode;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    let docker_ready = Command::new("docker")
+        .arg("info")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !docker_ready {
+        eprintln!("docker not available/running; skipping installer_succeeds_with_no_controlling_terminal");
+        return;
+    }
+
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let work = temp.path();
+    let bin_dir = work.join("bin");
+    let fixtures_dir = work.join("fixtures");
+    let home_dir = work.join("home");
+    let elvm_dir = work.join("elvm");
+    for dir in [&bin_dir, &fixtures_dir, &home_dir, &elvm_dir] {
+        std::fs::create_dir_all(dir).expect("create work subdir");
+    }
+
+    // A real gzip'd tarball containing a single "elvm" entry, exactly like
+    // installer_executes_with_network_stub builds, but written straight to
+    // disk and bind-mounted rather than embedded as base64 in the stub.
+    let binary_content = b"test-elvm-binary-content-marker";
+    let tarball_path = fixtures_dir.join("test.tar.gz");
+    {
+        let tar_gz = GzEncoder::new(
+            std::fs::File::create(&tarball_path).expect("create tarball"),
+            Compression::default(),
+        );
+        let mut tar = tar::Builder::new(tar_gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(binary_content.len() as u64);
+        header.set_cksum();
+        tar.append_data(&mut header, "elvm", &binary_content[..])
+            .expect("add to tar");
+        tar.into_inner()
+            .expect("finish tar")
+            .finish()
+            .expect("finish gzip");
+    }
+    let mut file = std::fs::File::open(&tarball_path).expect("open tarball");
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).expect("hash tarball");
+    let digest = encode(hasher.finalize());
+    std::fs::write(
+        fixtures_dir.join("test.tar.gz.sha256"),
+        format!("{digest}  test.tar.gz\n"),
+    )
+    .expect("write checksum fixture");
+
+    // A curl stub that never touches the network: it serves the fixtures
+    // above by copying them into place, and the fake "latest" release tag.
+    let curl_stub = bin_dir.join("curl");
+    std::fs::write(
+        &curl_stub,
+        r#"#!/bin/sh
+url=""
+output=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    output="$arg"
+  elif [ "${arg#-}" = "$arg" ]; then
+    url="$arg"
+  fi
+  prev="$arg"
+done
+case "$url" in
+  *releases/latest*) printf '{"tag_name": "v0.1.0"}\n' ;;
+  *.tar.gz) cp /fixtures/test.tar.gz "$output" ;;
+  *.sha256) cp /fixtures/test.tar.gz.sha256 "$output" ;;
+  *) echo "curl stub: unexpected url: $url" >&2; exit 1 ;;
+esac
+"#,
+    )
+    .expect("write curl stub");
+    std::fs::set_permissions(&curl_stub, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod curl stub");
+
+    let repo = env!("CARGO_MANIFEST_DIR");
+    // No `-i`/`-t`: the container's init process gets no controlling
+    // terminal at all regardless of the host's own tty state, which is
+    // exactly the no-controlling-terminal case CI and container runs hit.
+    let output = Command::new("docker")
+        .args(["run", "--rm"])
+        .arg("-v")
+        .arg(format!("{repo}:/repo:ro"))
+        .arg("-v")
+        .arg(format!("{}:/work/bin:ro", bin_dir.display()))
+        .arg("-v")
+        .arg(format!("{}:/fixtures:ro", fixtures_dir.display()))
+        .arg("-v")
+        .arg(format!("{}:/home/tester", home_dir.display()))
+        .arg("-v")
+        .arg(format!("{}:/elvm", elvm_dir.display()))
+        .args(["-e", "HOME=/home/tester"])
+        .args(["-e", "ELVM_DIR=/elvm"])
+        .args(["-e", "SHELL=/bin/sh"])
+        .args([
+            "-e",
+            "PATH=/work/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ])
+        .args(["alpine:3", "sh", "/repo/install.sh"])
+        .output();
+
+    let output = match output {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("docker run could not be spawned ({err}); skipping");
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // A container image pull failure (e.g. no network to Docker Hub) is an
+    // environment limitation, not a regression in install.sh; skip rather
+    // than fail on it.
+    if !output.status.success()
+        && (stderr.contains("Cannot connect to the Docker daemon")
+            || stderr.contains("No such image")
+            || stderr.contains("pull access denied")
+            || stderr.contains("i/o timeout"))
+    {
+        eprintln!("docker environment unavailable ({stderr}); skipping");
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "installer must exit 0 with no controlling tty (the CRITICAL 1 regression \
+         aborted here with ENXIO after installing the binary):\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("add this line to") && stdout.contains("yourself:"),
+        "installer must print the manual-PATH instructions when neither stdin nor \
+         /dev/tty is usable:\nstdout: {stdout}"
+    );
+    assert!(
+        elvm_dir.join("bin/elvm").is_file(),
+        "the binary must still be installed even though the PATH prompt could not run"
+    );
+}
+
 // Simple base64 encoder for embedding tarball in shell script
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
