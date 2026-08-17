@@ -4,6 +4,7 @@
 set -eu
 
 main() {
+    repo="illegalstudio/elvm"
     modify_path=1
     assume_yes=0
     for arg in "$@"; do
@@ -21,9 +22,9 @@ main() {
 
     elvm_dir="${ELVM_DIR:-$HOME/.elvm}"
     target="$(detect_target)"
-    version="${ELVM_VERSION:-$(latest_version)}"
+    version="${ELVM_VERSION:-$(latest_version "$repo")}"
     tarball="elvm-v${version}-${target}.tar.gz"
-    base="https://github.com/${REPO}/releases/download/v${version}"
+    base="https://github.com/${repo}/releases/download/v${version}"
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
@@ -74,10 +75,14 @@ need() {
     command -v "$1" >/dev/null 2>&1 || err "$1 is required but was not found"
 }
 
+get_digest_tool() {
+    command -v shasum >/dev/null 2>&1 && printf 'shasum' && return 0
+    command -v sha256sum >/dev/null 2>&1 && printf 'sha256sum' && return 0
+    return 1
+}
+
 need_digest_tool() {
-    command -v shasum >/dev/null 2>&1 && return 0
-    command -v sha256sum >/dev/null 2>&1 && return 0
-    err "neither shasum nor sha256sum is available to verify the download"
+    get_digest_tool >/dev/null || err "neither shasum nor sha256sum is available to verify the download"
 }
 
 detect_target() {
@@ -92,7 +97,8 @@ detect_target() {
 }
 
 latest_version() {
-    json="$(curl -fsSL "https://api.github.com/repos/illegalstudio/elvm/releases/latest")" \
+    repo="$1"
+    json="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest")" \
         || err "could not reach the GitHub API to find the latest elvm version"
     version="$(printf '%s' "$json" | sed -n 's/.*"tag_name" *: *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)"
     [ -n "$version" ] || err "could not determine the latest elvm version"
@@ -103,12 +109,11 @@ verify() {
     dir="$1"
     file="$2"
     expected="$(awk '{print $1}' "${dir}/${file}.sha256")"
-    if command -v shasum >/dev/null 2>&1; then
+    digest_tool="$(get_digest_tool)" || err "neither shasum nor sha256sum is available to verify the download"
+    if [ "$digest_tool" = "shasum" ]; then
         actual="$(shasum -a 256 "${dir}/${file}" | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        actual="$(sha256sum "${dir}/${file}" | awk '{print $1}')"
     else
-        err "neither shasum nor sha256sum is available to verify the download"
+        actual="$(sha256sum "${dir}/${file}" | awk '{print $1}')"
     fi
     [ "$expected" = "$actual" ] || err "checksum mismatch for ${file}"
 }
