@@ -15,7 +15,18 @@ pub fn fetch_text(url: &str) -> anyhow::Result<String> {
 
 /// Streams `url` to `dest`, hashing as it writes, and refuses to keep a file
 /// whose digest does not match. Nothing downstream ever sees a bad archive.
+///
+/// If `dest` already exists and hashes to `expected_sha256`, the fetch is
+/// skipped entirely: a previously verified tarball in `cache/downloads/` is
+/// reused rather than re-streamed, which is what makes that cache useful for
+/// offline reinstalls and for `--force` against a version already on disk.
 pub fn fetch_verified(url: &str, expected_sha256: &str, dest: &Path) -> anyhow::Result<()> {
+    if let Some(actual) = hash_file(dest)? {
+        if actual.eq_ignore_ascii_case(expected_sha256) {
+            return Ok(());
+        }
+    }
+
     let mut response = client()?.get(url).send()?.error_for_status()?;
     let total = response.content_length().unwrap_or(0);
 
@@ -47,6 +58,18 @@ pub fn fetch_verified(url: &str, expected_sha256: &str, dest: &Path) -> anyhow::
         anyhow::bail!("checksum mismatch\n  expected {expected_sha256}\n  actual   {actual}");
     }
     Ok(())
+}
+
+/// The SHA-256 of `path`'s contents, or `None` if it does not exist yet.
+fn hash_file(path: &Path) -> anyhow::Result<Option<String>> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(Some(hex::encode(hasher.finalize())))
 }
 
 /// Reads the digest out of a `shasum`-style file: `<hex>  <filename>`.

@@ -376,6 +376,73 @@ fn ls_remote_marks_releases_with_no_binary_for_this_platform() {
         ));
 }
 
+/// IMPORTANT 3 / spec §4.5 step 3: a tarball already verified in
+/// `cache/downloads/` must be reused rather than re-downloaded. Installs
+/// once for real, then reinstalls with `--force` against a *second* upstream
+/// whose tarball route always fails — the checksum route still serves the
+/// digest that matches what is already cached, so the only way this can
+/// succeed is by never hitting the tarball route at all. `assert_hits(0)`
+/// pins that directly, rather than relying on failure-by-side-effect.
+#[test]
+fn a_verified_cached_tarball_is_reused_instead_of_re_downloaded() {
+    let sandbox = Sandbox::new();
+    let first = Upstream::start("0.26.4");
+
+    elvm(&sandbox, &first)
+        .args(["install", "0.26.4"])
+        .assert()
+        .success();
+
+    let tar_name = format!("elephc-v0.26.4-{}.tar.gz", elvm_target());
+    let cached = sandbox.elvm_dir().join("cache/downloads").join(&tar_name);
+    assert!(
+        cached.is_file(),
+        "the verified tarball must be left in cache/downloads/"
+    );
+    let digest = sha256_hex(&std::fs::read(&cached).unwrap());
+
+    // A fresh server: same digest (matching what's already cached), but the
+    // tarball body route fails outright if it is ever requested.
+    let server = MockServer::start();
+    let tar_url = server.url(format!("/download/{tar_name}"));
+    let sha_url = server.url(format!("/download/{tar_name}.sha256"));
+    let tarball_route = server.mock(|when, then| {
+        when.method(GET).path(format!("/download/{tar_name}"));
+        then.status(500);
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path(format!("/download/{tar_name}.sha256"));
+        then.status(200).body(format!("{digest}  {tar_name}\n"));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/repos/illegalstudio/elephc/releases");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(format!(
+                r#"[{{"tag_name":"v0.26.4","assets":[
+                    {{"name":"{tar_name}","browser_download_url":"{tar_url}"}},
+                    {{"name":"{tar_name}.sha256","browser_download_url":"{sha_url}"}}
+                ]}}]"#,
+            ));
+    });
+
+    Command::cargo_bin("elvm")
+        .unwrap()
+        .env("ELVM_DIR", sandbox.elvm_dir())
+        .env("HOME", sandbox.home())
+        .env("ELVM_GITHUB_API", server.base_url())
+        .env("ELVM_TARGET", elvm_target())
+        .env_remove("ELEPHC_VERSION")
+        .current_dir(sandbox.home())
+        .args(["install", "0.26.4", "--force"])
+        .assert()
+        .success();
+
+    tarball_route.assert_hits(0);
+}
+
 #[test]
 fn a_successful_force_reinstall_replaces_the_working_install() {
     let sandbox = Sandbox::new();
