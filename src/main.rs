@@ -1,10 +1,12 @@
 mod cli;
 mod commands;
 mod errors;
+mod github;
 mod installed;
 mod paths;
 mod resolve;
 mod shim;
+mod target;
 mod version;
 
 use std::ffi::OsString;
