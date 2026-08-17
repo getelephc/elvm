@@ -138,7 +138,7 @@ pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Rel
     let releases = parse_releases(&body)?;
 
     if let Some(parent) = cache.parent() {
-        std::fs::create_dir_all(parent)?;
+        let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&cache, &body);
     Ok(releases)
@@ -179,5 +179,24 @@ mod tests {
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].version, Version::parse("0.26.4").unwrap());
         assert_eq!(releases[0].assets[0].url, "https://example.test/a");
+    }
+
+    #[test]
+    fn sorts_releases_by_descending_semver_order() {
+        // Deliberately give releases in mixed order, including a pair that
+        // demonstrates semver vs lexicographic difference (0.9.0 vs 0.10.0).
+        let json = r#"[
+          {"tag_name":"v0.10.0","assets":[]},
+          {"tag_name":"v0.26.4","assets":[]},
+          {"tag_name":"v0.9.0","assets":[]},
+          {"tag_name":"v1.0.0","assets":[]}
+        ]"#;
+        let releases = parse_releases(json).unwrap();
+        assert_eq!(releases.len(), 4);
+        // Must be strictly descending: 1.0.0, 0.26.4, 0.10.0, 0.9.0
+        assert_eq!(releases[0].version, Version::parse("1.0.0").unwrap());
+        assert_eq!(releases[1].version, Version::parse("0.26.4").unwrap());
+        assert_eq!(releases[2].version, Version::parse("0.10.0").unwrap());
+        assert_eq!(releases[3].version, Version::parse("0.9.0").unwrap());
     }
 }
