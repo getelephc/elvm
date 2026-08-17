@@ -37,11 +37,33 @@ jobs:
             sha256sum "$NAME" > "$NAME.sha256"
           fi
 
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: release-assets-${{ matrix.target }}
+          path: |
             elvm-*.tar.gz
             elvm-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # A single job creates the release, once, from every leg's uploaded
+  # assets. Three matrix legs each calling action-gh-release@v2 against the
+  # same tag concurrently used to race the create path: create-or-update
+  # usually tolerates it, but a 422 on the create could fail one leg and
+  # publish only 4 of 6 assets, which then 404s install.sh for whichever
+  # platform lost the race.
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
 
   deploy-installer:
     needs: build
@@ -52,4 +74,9 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # worker/wrangler.toml has no account_id. Without this, a token
+          # that can see more than one Cloudflare account fails
+          # non-interactively with "More than one account available but
+          # unable to select one in non-interactive mode."
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: worker
