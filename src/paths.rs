@@ -6,7 +6,6 @@ pub struct ElvmPaths {
     root: PathBuf,
 }
 
-#[allow(dead_code)]
 impl ElvmPaths {
     /// Reads `$ELVM_DIR`, falling back to `$HOME/.elvm`.
     pub fn from_env() -> anyhow::Result<Self> {

@@ -1,8 +1,12 @@
+mod archive;
 mod cli;
 mod commands;
+mod download;
 mod errors;
 mod github;
+mod install;
 mod installed;
+mod lock;
 mod paths;
 mod resolve;
 mod shim;

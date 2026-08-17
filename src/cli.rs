@@ -76,6 +76,14 @@ pub fn run() -> anyhow::Result<()> {
     let paths = ElvmPaths::from_env()?;
 
     match cli.command {
+        Command::Install {
+            version,
+            build,
+            force,
+        } => match build {
+            Some(_) => anyhow::bail!("--build is not implemented yet"),
+            None => crate::commands::install::run(&paths, version.as_deref(), force),
+        },
         Command::Use { version, global } => crate::commands::use_::run(&paths, &version, global),
         Command::Ls => crate::commands::ls::run(&paths),
         Command::Which { version } => crate::commands::which::run(&paths, version.as_deref()),

@@ -4,15 +4,16 @@ use serde::Deserialize;
 
 /// A published elephc release, reduced to what elvm needs.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Release {
+    // Not read yet; kept for parity with the API response and future use
+    // (e.g. surfacing the tag in `elvm ls-remote`).
+    #[allow(dead_code)]
     pub tag: String,
     pub version: Version,
     pub assets: Vec<Asset>,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Asset {
     pub name: String,
     pub url: String,
@@ -36,18 +37,15 @@ struct RawAsset {
 }
 
 impl Release {
-    #[allow(dead_code)]
     pub fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.iter().find(|a| a.name == name)
     }
 }
 
-#[allow(dead_code)]
 pub fn tarball_name(version: &Version, target: &str) -> String {
     format!("elephc-v{version}-{target}.tar.gz")
 }
 
-#[allow(dead_code)]
 pub fn checksum_name(version: &Version, target: &str) -> String {
     format!("{}.sha256", tarball_name(version, target))
 }
@@ -59,7 +57,6 @@ fn api_base() -> String {
     }
 }
 
-#[allow(dead_code)]
 pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
     let raw: Vec<RawRelease> = serde_json::from_str(json)?;
     let mut releases = Vec::new();
@@ -92,7 +89,6 @@ pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
 /// Unauthenticated GitHub allows 60 requests per hour per IP, which CI runners
 /// on shared egress do exhaust, so responses are cached and a token is sent
 /// when the environment provides one.
-#[allow(dead_code)]
 pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Release>> {
     let cache = paths.releases_json();
     if !refresh {

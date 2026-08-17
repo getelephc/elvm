@@ -1,5 +1,6 @@
 pub mod current;
 pub mod init;
+pub mod install;
 pub mod ls;
 pub mod use_;
 pub mod which;

@@ -5,7 +5,6 @@ pub const PUBLISHED_TARGETS: [&str; 1] = ["aarch64-apple-darwin"];
 ///
 /// `ELVM_TARGET` overrides detection so tests can exercise the download path
 /// and the unpublished-target error on any runner.
-#[allow(dead_code)]
 pub fn host() -> anyhow::Result<String> {
     if let Ok(value) = std::env::var("ELVM_TARGET") {
         if !value.is_empty() {
@@ -20,7 +19,6 @@ pub fn host() -> anyhow::Result<String> {
     })
 }
 
-#[allow(dead_code)]
 pub fn elephc_publishes(target: &str) -> bool {
     PUBLISHED_TARGETS.contains(&target)
 }
