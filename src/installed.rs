@@ -36,8 +36,16 @@ impl Installed {
         let mut found = Self::default();
         for entry in entries {
             let entry = entry?;
-            // Follows symlinks on purpose: `elvm link` installs a symlink.
-            if !entry.path().is_dir() {
+            // A symlink under `versions/` is always an alias created by
+            // `elvm link`; it must count as present even when its target has
+            // been deleted or moved, so a dangling link stays visible to
+            // `ls`/`doctor` instead of disappearing — with `is_dir()`
+            // (which follows symlinks) it would vanish silently, leaving
+            // `uninstall <name>` unable to find it and `link ... --as <name>`
+            // unable to reuse the name, an unrecoverable dead end. A plain
+            // file (not a directory, not a symlink) is never a version.
+            let file_type = entry.file_type()?;
+            if !file_type.is_dir() && !file_type.is_symlink() {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -82,6 +90,21 @@ mod tests {
             fs::create_dir_all(paths.version_dir(entry)).unwrap();
         }
         (tmp, paths)
+    }
+
+    #[test]
+    fn a_dangling_symlink_under_versions_is_still_an_alias() {
+        let (_tmp, paths) = fixture(&["0.26.4"]);
+        let target = paths.root().join("nowhere");
+        std::os::unix::fs::symlink(&target, paths.version_dir("dev")).unwrap();
+        assert!(
+            !target.exists(),
+            "the symlink target must not exist for this test to mean anything"
+        );
+
+        let installed = Installed::scan(&paths).unwrap();
+        assert_eq!(installed.aliases, vec!["dev".to_string()]);
+        assert_eq!(installed.versions, vec![Version::parse("0.26.4").unwrap()]);
     }
 
     #[test]
