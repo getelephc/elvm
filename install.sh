@@ -134,14 +134,18 @@ configure_path() {
     fi
 
     if [ "$yes" -eq 0 ]; then
-        if [ ! -t 0 ]; then
+        if [ -t 0 ]; then
+            printf 'Add elvm to PATH in %s? [y/N] ' "$profile"
+            read -r answer
+        elif [ -r /dev/tty ]; then
+            printf 'Add elvm to PATH in %s? [y/N] ' "$profile" > /dev/tty
+            read -r answer < /dev/tty
+        else
             say ""
             say "add this line to ${profile} yourself:"
             say "  ${line}"
             return 0
         fi
-        printf 'Add elvm to PATH in %s? [y/N] ' "$profile"
-        read -r answer
         case "$answer" in
             y|Y|yes|YES) ;;
             *) say "skipped; add it yourself:  ${line}"; return 0 ;;

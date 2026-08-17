@@ -7,8 +7,9 @@ Version manager for [elephc](https://github.com/illegalstudio/elephc).
     curl -fsSL https://get.elephc.dev | sh
     elvm install latest
 
-The installer adds `~/.elvm/bin` to your `PATH` and installs elvm itself. It
-does not download a compiler — you choose the version.
+The installer prompts to add `~/.elvm/bin` to your `PATH` and installs elvm itself. It
+does not download a compiler — you choose the version. After installation, start a
+new shell for the `PATH` to update.
 
 ## Use
 
