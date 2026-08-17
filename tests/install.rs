@@ -121,6 +121,62 @@ impl Upstream {
         });
         Self { server }
     }
+
+    /// Serves two versions: one with the current target's tarball, one with
+    /// only a different platform's assets. Tests the "no binary for this
+    /// platform" marker in ls-remote.
+    fn start_with_missing_platform(available: &str, unavailable: &str) -> Self {
+        let server = MockServer::start();
+        let tarball = fake_release_tarball();
+        let mut entries = Vec::new();
+
+        // Version with current platform available
+        let available_name = format!("elephc-v{}-{}", available, elvm_target());
+        let available_tar = format!("{}.tar.gz", available_name);
+        let available_url = server.url(format!("/download/{}", available_tar));
+        let available_sha_url = server.url(format!("/download/{}.sha256", available_tar));
+
+        entries.push(format!(
+            r#"{{"tag_name":"v{}","assets":[
+                {{"name":"{}","browser_download_url":"{}"}},
+                {{"name":"{}.sha256","browser_download_url":"{}"}}
+            ]}}"#,
+            available, available_tar, available_url, available_tar, available_sha_url
+        ));
+
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/download/{}", available_tar));
+            then.status(200).body(tarball.clone());
+        });
+
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/download/{}.sha256", available_tar));
+            then.status(200)
+                .body(format!("{}  {}\n", sha256_hex(&tarball), available_tar));
+        });
+
+        // Version with a different platform only (no current target)
+        let unavailable_name = format!("elephc-v{}-x86_64-unknown-linux-gnu", unavailable);
+        let unavailable_tar = format!("{}.tar.gz", unavailable_name);
+
+        entries.push(format!(
+            r#"{{"tag_name":"v{}","assets":[{{"name":"{}","browser_download_url":"/missing"}}]}}"#,
+            unavailable, unavailable_tar
+        ));
+
+        let releases = format!("[{}]", entries.join(","));
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/illegalstudio/elephc/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(releases);
+        });
+
+        Self { server }
+    }
 }
 
 /// The one target elephc publishes; these tests exercise the download path,
@@ -303,4 +359,19 @@ fn ls_remote_lists_published_versions_and_marks_installed_ones() {
         .success()
         .stdout(predicates::str::contains("* 0.26.4"))
         .stdout(predicates::str::contains("  0.25.2"));
+}
+
+#[test]
+fn ls_remote_marks_releases_with_no_binary_for_this_platform() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start_with_missing_platform("0.26.4", "0.25.2");
+
+    elvm(&sandbox, &upstream)
+        .arg("ls-remote")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("  0.26.4"))
+        .stdout(predicates::str::contains(
+            "  0.25.2  (no binary for this platform)",
+        ));
 }

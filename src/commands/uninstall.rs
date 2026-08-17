@@ -10,7 +10,9 @@ pub fn run(paths: &ElvmPaths, raw: &str) -> anyhow::Result<()> {
 
     let dir = paths.version_dir(&name);
     // A linked checkout is a symlink; removing the link must not touch the
-    // user's source tree.
+    // user's source tree. This guard is deliberate: it makes the destructive
+    // operation's intent explicit and keeps behaviour correct if the path
+    // is ever resolved before removal (as canonicalize would do).
     if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
         std::fs::remove_file(&dir)?;
     } else {
