@@ -1,4 +1,5 @@
 mod paths;
+mod version;
 
 fn main() {
     if let Err(err) = run() {
