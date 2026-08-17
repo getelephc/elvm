@@ -289,3 +289,18 @@ fn install_with_no_argument_reads_the_version_file() {
 
     assert!(sandbox.elvm_dir().join("versions/0.26.4/elephc").is_file());
 }
+
+#[test]
+fn ls_remote_lists_published_versions_and_marks_installed_ones() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start_many(&["0.25.2", "0.26.4"], None);
+    // Install only one of the two published versions
+    sandbox.fake_elephc("0.26.4");
+
+    elvm(&sandbox, &upstream)
+        .arg("ls-remote")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("* 0.26.4"))
+        .stdout(predicates::str::contains("  0.25.2"));
+}

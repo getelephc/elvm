@@ -197,3 +197,35 @@ fn cache_clean_empties_the_downloads_directory() {
 
     assert_eq!(std::fs::read_dir(&downloads).unwrap().count(), 0);
 }
+
+#[test]
+fn uninstall_removes_a_symlinked_checkout_without_deleting_the_source() {
+    let sandbox = Sandbox::new();
+    let checkout = sandbox.home().join("dev-checkout");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::write(checkout.join("marker"), b"keep").unwrap();
+    std::os::unix::fs::symlink(&checkout, sandbox.elvm_dir().join("versions/dev")).unwrap();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["uninstall", "dev"])
+        .assert()
+        .success();
+
+    assert!(!sandbox.elvm_dir().join("versions/dev").exists());
+    assert!(checkout.join("marker").exists());
+}
+
+#[test]
+fn cache_clean_removes_cached_release_list_even_when_downloads_missing() {
+    let sandbox = Sandbox::new();
+    let cache_dir = sandbox.elvm_dir().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join("releases.json"), b"stale").unwrap();
+
+    elvm(&sandbox, &sandbox.home())
+        .args(["cache", "clean"])
+        .assert()
+        .success();
+
+    assert!(!cache_dir.join("releases.json").exists());
+}
