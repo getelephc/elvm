@@ -195,11 +195,20 @@ pub fn run(paths: &ElvmPaths, all: bool) -> anyhow::Result<()> {
     println!();
 
     let last_idx = grouped.rows.len().saturating_sub(1);
+    let mut printed_collapsed_row = false;
     let mut printed_blank_before_expanded = false;
     for (idx, row) in grouped.rows.iter().enumerate() {
-        if row.expanded && !printed_blank_before_expanded {
+        // Only separate the collapsed block from the expanded one when a
+        // collapsed row actually printed before it — otherwise (every
+        // published version is in one series, so row 0 is already
+        // `expanded`) the header's own trailing blank line is already the
+        // only separator needed, and this would double it.
+        if row.expanded && !printed_blank_before_expanded && printed_collapsed_row {
             println!();
             printed_blank_before_expanded = true;
+        }
+        if !row.expanded {
+            printed_collapsed_row = true;
         }
         let marker = if installed.versions.contains(&row.version) {
             "*"
@@ -348,6 +357,14 @@ mod tests {
             assert_eq!(grouped.hidden_series, 0, "n={n}");
             assert_eq!(grouped.rows.len() as u64, n, "n={n}");
         }
+    }
+
+    #[test]
+    fn hidden_line_appears_as_soon_as_series_count_exceeds_the_max() {
+        let grouped = group(&n_series(11));
+        assert_eq!(grouped.total_series, 11);
+        assert_eq!(grouped.hidden_series, 1);
+        assert_eq!(grouped.rows.len(), 10);
     }
 
     #[test]

@@ -428,6 +428,29 @@ fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
     assert!(stdout.trim_end().ends_with("0.26.1  ← latest"));
 }
 
+/// Review finding on `main` (post `5f2d9c7`): when the published list spans
+/// exactly one `(major, minor)` series, there is no collapsed block, so row
+/// 0 of `group()`'s output is itself `expanded`. The header block always
+/// prints one blank line as a separator, and the row loop separately prints
+/// one the first time it sees an `expanded` row — with no collapsed block
+/// to separate from, that's the same seam twice, producing two blank lines
+/// back to back instead of one. Pins the fix by asserting the exact
+/// expected bytes, not just "some blank line exists somewhere".
+#[test]
+fn ls_remote_prints_exactly_one_blank_line_when_everything_is_one_series() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start_many(&["0.26.0", "0.26.1", "0.26.2"], None);
+
+    let assert = elvm(&sandbox, &upstream)
+        .arg("ls-remote")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    let expected = "3 releases in 1 series — elvm ls-remote --all for every patch\n\n  0.26.0\n  0.26.1\n  0.26.2  ← latest\n";
+    assert_eq!(stdout, expected, "{stdout:?}");
+}
+
 /// `--all` lists every published patch, flat: no collapsing, no "latest"
 /// marker, no summary header, no hidden-series line — just every release,
 /// oldest first, newest last, with the usual `*`.
