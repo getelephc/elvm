@@ -376,10 +376,11 @@ fn ls_remote_marks_releases_with_no_binary_for_this_platform() {
         ));
 }
 
-/// The default (grouped) shape: the newest (major, minor) series listed
-/// patch by patch, every older series collapsed to its highest patch with a
-/// `(+N)` count of what's beneath it, and a footer naming both counts and
-/// the `--all` flag.
+/// The default (grouped) shape: a summary header naming both counts, the
+/// newest (major, minor) series listed patch by patch with the highest
+/// version last, and every older series collapsed to its highest patch with
+/// a `(+N)` count of what's beneath it — oldest series first, so the very
+/// last line on screen is always the newest release.
 #[test]
 fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
     let sandbox = Sandbox::new();
@@ -394,11 +395,17 @@ fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
 
-    // Newest series (0.26) is expanded patch by patch, with no (+N) suffix,
-    // and only its first (highest) line carries the "latest" marker.
-    assert!(stdout.contains("0.26.1  ← latest"), "{stdout}");
-    assert!(stdout.contains("0.26.0"), "{stdout}");
-    assert!(!stdout.contains("0.26.0  (+"), "{stdout}");
+    // Header names both counts and the flag to see everything; with only 3
+    // series and none hidden, there's no "N older series hidden" line.
+    assert!(
+        stdout.contains("6 releases in 3 series — elvm ls-remote --all for every patch"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("hidden"), "{stdout}");
+
+    // A series with only one patch collapses with no (+N) suffix at all.
+    assert!(stdout.contains("0.24.0"), "{stdout}");
+    assert!(!stdout.contains("0.24.0  (+"), "{stdout}");
 
     // Older series collapse to their highest patch with a count of the rest;
     // the patches beneath it must not get their own line.
@@ -406,19 +413,24 @@ fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
     assert!(!stdout.contains("0.25.0"), "{stdout}");
     assert!(!stdout.contains("0.25.1"), "{stdout}");
 
-    // A series with only one patch collapses with no (+N) suffix at all.
-    assert!(stdout.contains("0.24.0"), "{stdout}");
-    assert!(!stdout.contains("0.24.0  (+"), "{stdout}");
+    // Newest series (0.26) is expanded patch by patch, with no (+N) suffix,
+    // and only its last (highest) line carries the "latest" marker.
+    assert!(stdout.contains("0.26.0"), "{stdout}");
+    assert!(!stdout.contains("0.26.0  (+"), "{stdout}");
+    assert!(stdout.contains("0.26.1  ← latest"), "{stdout}");
 
-    // Footer names both counts and the flag to see everything.
-    assert!(
-        stdout.contains("4 rows, 6 releases — elvm ls-remote --all for every patch"),
-        "{stdout}"
-    );
+    // Oldest-first, newest-last: the collapsed block precedes the expanded
+    // one, and within it "0.26.1  ← latest" is the very last line printed.
+    let pos = |needle: &str| stdout.find(needle).unwrap();
+    assert!(pos("0.24.0") < pos("0.25.2"));
+    assert!(pos("0.25.2") < pos("0.26.0"));
+    assert!(pos("0.26.0") < pos("0.26.1  ← latest"));
+    assert!(stdout.trim_end().ends_with("0.26.1  ← latest"));
 }
 
 /// `--all` lists every published patch, flat: no collapsing, no "latest"
-/// marker, no summary footer — just newest-first with the usual `*`.
+/// marker, no summary header, no hidden-series line — just every release,
+/// oldest first, newest last, with the usual `*`.
 #[test]
 fn ls_remote_all_lists_every_published_patch_with_no_grouping() {
     let sandbox = Sandbox::new();
@@ -435,13 +447,15 @@ fn ls_remote_all_lists_every_published_patch_with_no_grouping() {
     }
     assert!(!stdout.contains("(+"), "{stdout}");
     assert!(!stdout.contains("← latest"), "{stdout}");
-    assert!(!stdout.contains("rows,"), "{stdout}");
+    assert!(!stdout.contains("releases in"), "{stdout}");
+    assert!(!stdout.contains("hidden"), "{stdout}");
 
-    // Newest first.
+    // Oldest first, newest last.
     let pos = |needle: &str| stdout.find(needle).unwrap();
-    assert!(pos("0.26.0") < pos("0.25.1"));
-    assert!(pos("0.25.1") < pos("0.25.0"));
-    assert!(pos("0.25.0") < pos("0.24.0"));
+    assert!(pos("0.24.0") < pos("0.25.0"));
+    assert!(pos("0.25.0") < pos("0.25.1"));
+    assert!(pos("0.25.1") < pos("0.26.0"));
+    assert!(stdout.trim_end().ends_with("0.26.0"));
 }
 
 /// Guards the pagination bug directly: GitHub returns releases 100 to a
@@ -499,6 +513,170 @@ fn ls_remote_all_lists_a_version_that_only_exists_on_the_second_page() {
         stdout.contains("0.16.0") && stdout.contains("0.16.1"),
         "expected page-2-only versions 0.16.0/0.16.1 in output, pagination is broken:\n{stdout}"
     );
+}
+
+/// Review finding on 645aec7: the pagination test above proves a *fresh*
+/// fetch merges every page, but nothing pinned that a *cache-served* call
+/// (i.e. `github::list_releases` reading `cache/releases.json` back off
+/// disk within its 600s TTL) still holds every page merged, rather than
+/// just whichever page happened to be fetched last. `ls-remote` can't stand
+/// in for this: `ls_remote::run` calls `list_releases(paths, true)`, which
+/// skips the cache-read branch and always re-fetches. `install` is the
+/// caller that passes `refresh: false` and genuinely reads the on-disk
+/// cache when it's fresh, so that's what this drives instead.
+///
+/// Page 1 is a full 100-entry page (0.20.0..0.20.99, so a correct client
+/// requests page 2 at all); page 2 carries two releases, 0.16.0 and 0.16.1,
+/// the latter the only place its download assets exist. A cold install of
+/// 0.16.1 forces the full paginated fetch and the cache write. The `page=2`
+/// route is then deleted outright, so a fresh fetch could not possibly see
+/// either page-2 release again. A second install, of a *page-1* release
+/// (0.20.50), only succeeds if the on-disk cache still holds page 1's 100
+/// entries merged with page 2's — a "cache only the last page" regression
+/// would leave the cache holding just 0.16.0/0.16.1, and this install would
+/// fail with "not a published release". Re-installing 0.16.1 with `--force`
+/// (page 2's own release, off the same cache) closes the loop.
+///
+/// Confirmed this discriminates the regression it's named for: with the
+/// cache write in `github::list_releases` changed from writing the merged
+/// `entries` array to writing the *last page's own response body*, this
+/// test fails — see the report for the actual output of that run.
+#[test]
+fn cache_served_release_list_still_holds_every_paginated_page() {
+    let sandbox = Sandbox::new();
+    let server = MockServer::start();
+    let tarball = fake_release_tarball();
+    let digest = sha256_hex(&tarball);
+
+    const PAGE1_MARKER: &str = "0.20.50";
+    const PAGE2_MARKER: &str = "0.16.1";
+
+    let asset_urls = |version: &str| -> (String, String, String, String) {
+        let tar_name = format!("elephc-v{version}-{}.tar.gz", elvm_target());
+        let tar_url = server.url(format!("/download/{tar_name}"));
+        let sha_url = server.url(format!("/download/{tar_name}.sha256"));
+        (
+            tar_name.clone(),
+            tar_url,
+            format!("{tar_name}.sha256"),
+            sha_url,
+        )
+    };
+
+    let (page1_tar_name, page1_tar_url, page1_sha_name, page1_sha_url) = asset_urls(PAGE1_MARKER);
+    let (page2_tar_name, page2_tar_url, page2_sha_name, page2_sha_url) = asset_urls(PAGE2_MARKER);
+
+    for (tar_name, sha_name) in [
+        (&page1_tar_name, &page1_sha_name),
+        (&page2_tar_name, &page2_sha_name),
+    ] {
+        let tarball = tarball.clone();
+        let digest = digest.clone();
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/download/{tar_name}"));
+            then.status(200).body(tarball.clone());
+        });
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/download/{sha_name}"));
+            then.status(200).body(format!("{digest}  {tar_name}\n"));
+        });
+    }
+
+    // Page 1: a full 100-entry page. Only 0.20.50 (PAGE1_MARKER) gets
+    // download assets, since it's the only page-1 release this test
+    // actually installs.
+    let page1_entries: Vec<String> = (0..100)
+        .map(|i| {
+            let version = format!("0.20.{i}");
+            if version == PAGE1_MARKER {
+                format!(
+                    r#"{{"tag_name":"v{version}","assets":[
+                        {{"name":"{page1_tar_name}","browser_download_url":"{page1_tar_url}"}},
+                        {{"name":"{page1_sha_name}","browser_download_url":"{page1_sha_url}"}}
+                    ]}}"#
+                )
+            } else {
+                format!(r#"{{"tag_name":"v{version}","assets":[]}}"#)
+            }
+        })
+        .collect();
+    let page1 = format!("[{}]", page1_entries.join(","));
+
+    // Page 2: two releases; 0.16.1 (PAGE2_MARKER) is the distinctive one
+    // whose assets only ever appear here.
+    let page2 = format!(
+        r#"[
+            {{"tag_name":"v0.16.0","assets":[]}},
+            {{"tag_name":"v{PAGE2_MARKER}","assets":[
+                {{"name":"{page2_tar_name}","browser_download_url":"{page2_tar_url}"}},
+                {{"name":"{page2_sha_name}","browser_download_url":"{page2_sha_url}"}}
+            ]}}
+        ]"#
+    );
+
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/repos/illegalstudio/elephc/releases")
+            .query_param("page", "1");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(page1);
+    });
+    let mut page2_route = server.mock(|when, then| {
+        when.method(GET)
+            .path("/repos/illegalstudio/elephc/releases")
+            .query_param("page", "2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(page2);
+    });
+
+    let sandbox_home = sandbox.home();
+    let elvm_cmd = || {
+        let mut cmd = Command::cargo_bin("elvm").unwrap();
+        cmd.env("ELVM_DIR", sandbox.elvm_dir())
+            .env("HOME", &sandbox_home)
+            .env("ELVM_GITHUB_API", server.base_url())
+            .env("ELVM_TARGET", elvm_target())
+            .env_remove("ELEPHC_VERSION")
+            .current_dir(&sandbox_home);
+        cmd
+    };
+
+    // Cold cache: installing the page-2-only release forces the full
+    // paginated fetch (page 1 + page 2) and writes the merged list to
+    // cache/releases.json.
+    elvm_cmd()
+        .args(["install", PAGE2_MARKER])
+        .assert()
+        .success();
+    assert!(sandbox
+        .elvm_dir()
+        .join(format!("versions/{PAGE2_MARKER}/elephc"))
+        .is_file());
+
+    // Page 2 is now unreachable: a fresh fetch could not possibly see
+    // either of its releases again.
+    page2_route.delete();
+
+    // Within the 600s TTL, install a *page-1* release. This only succeeds
+    // if the on-disk cache still holds page 1's 100 entries merged with
+    // page 2's, not just whichever page was written last.
+    elvm_cmd()
+        .args(["install", PAGE1_MARKER])
+        .assert()
+        .success();
+    assert!(sandbox
+        .elvm_dir()
+        .join(format!("versions/{PAGE1_MARKER}/elephc"))
+        .is_file());
+
+    // And the page-2-only release itself must still resolve off the same
+    // cache.
+    elvm_cmd()
+        .args(["install", PAGE2_MARKER, "--force"])
+        .assert()
+        .success();
 }
 
 /// IMPORTANT 3 / spec §4.5 step 3: a tarball already verified in
