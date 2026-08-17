@@ -28,6 +28,10 @@ struct RawRelease {
     tag_name: String,
     #[serde(default)]
     assets: Vec<RawAsset>,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +65,15 @@ pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
     let raw: Vec<RawRelease> = serde_json::from_str(json)?;
     let mut releases = Vec::new();
     for entry in raw {
+        // Prereleases and drafts are not versions elvm should ever pick for
+        // `latest`: semver ranks `0.27.0-beta.1` above `0.26.4` (a
+        // prerelease marker only lowers a version relative to its own
+        // final release, not relative to earlier finals), so leaving these
+        // in would make `elvm install latest` silently start installing a
+        // beta the moment one is published.
+        if entry.prerelease || entry.draft {
+            continue;
+        }
         let body = entry.tag_name.trim_start_matches('v');
         // Tags that are not semver (a moving "nightly", say) are not versions
         // elvm can install, so they are skipped rather than treated as errors.
@@ -175,6 +188,21 @@ mod tests {
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].version, Version::parse("0.26.4").unwrap());
         assert_eq!(releases[0].assets[0].url, "https://example.test/a");
+    }
+
+    #[test]
+    fn prereleases_and_drafts_are_never_returned() {
+        // The prerelease outranks the stable release by raw semver
+        // (0.27.0-beta.1 > 0.26.4), so this also proves the filter runs
+        // before anything downstream could pick it as "latest".
+        let json = r#"[
+          {"tag_name":"v0.27.0-beta.1","assets":[],"prerelease":true},
+          {"tag_name":"v0.26.4","assets":[]},
+          {"tag_name":"v0.28.0","assets":[],"draft":true}
+        ]"#;
+        let releases = parse_releases(json).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].version, Version::parse("0.26.4").unwrap());
     }
 
     #[test]

@@ -1,9 +1,25 @@
 use crate::github;
 use crate::install;
 use crate::paths::ElvmPaths;
+use crate::target;
 use crate::version::VersionRequest;
 
 pub fn run(paths: &ElvmPaths, version: Option<&str>, force: bool) -> anyhow::Result<()> {
+    // Checked before any network call: on CI runners and other non-macOS
+    // hosts this is exactly where a request would otherwise die of a rate
+    // limit or a dropped connection first, masking the real reason
+    // (elephc simply isn't published here) behind an unrelated network
+    // error. `install::from_release` checks this again for callers that
+    // reach it directly, but the user-facing path must fail fast.
+    let host = target::host()?;
+    if !target::elephc_publishes(&host) {
+        anyhow::bail!(
+            "no published binary for {host}\n  \
+             elephc publishes macOS ARM64 only; build it instead:\n  \
+             elvm install --build"
+        );
+    }
+
     let raw = match version {
         Some(value) => value.to_string(),
         None => {

@@ -22,13 +22,10 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
     let _lock = InstallLock::acquire(paths)?;
 
     let destination = paths.version_dir(&version.to_string());
-    if destination.exists() {
-        if !force {
-            anyhow::bail!(
-                "elephc {version} is already installed\n  reinstall with: elvm install {version} --force"
-            );
-        }
-        std::fs::remove_dir_all(&destination)?;
+    if destination.exists() && !force {
+        anyhow::bail!(
+            "elephc {version} is already installed\n  reinstall with: elvm install {version} --force"
+        );
     }
 
     let releases = github::list_releases(paths, false)?;
@@ -62,9 +59,22 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
         anyhow::bail!("the downloaded archive is missing the elephc binary or its bridge archives");
     }
 
-    // Atomic: staging and versions/ share a filesystem, so a crash leaves a
-    // stale tmp directory rather than a half-installed version.
-    std::fs::rename(staging.keep(), &destination)?;
+    // Everything that can fail — the release lookup, checksum fetch,
+    // download, extraction, and completeness check — has already happened
+    // above, against the staging directory. Only now, right before the
+    // rename that replaces it, do we touch the existing installation: this
+    // shrinks the destructive window from the whole network-and-extraction
+    // phase down to these two adjacent syscalls. The rename itself is
+    // atomic (staging and versions/ share a filesystem), so a crash here
+    // leaves a stale tmp directory, never a half-installed version — but a
+    // crash between the remove and the rename can still leave `force`
+    // reinstalls with nothing in place, which is the best this two-step
+    // swap (no atomic directory replace exists in POSIX) can offer.
+    let staged = staging.keep();
+    if destination.exists() {
+        std::fs::remove_dir_all(&destination)?;
+    }
+    std::fs::rename(staged, &destination)?;
     println!("installed elephc {version}");
     Ok(())
 }
