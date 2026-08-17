@@ -1,0 +1,47 @@
+# elvm
+
+Version manager for [elephc](https://github.com/illegalstudio/elephc).
+
+## Install
+
+    curl -fsSL https://get.elephc.dev | sh
+    elvm install latest
+
+The installer adds `~/.elvm/bin` to your `PATH` and installs elvm itself. It
+does not download a compiler — you choose the version.
+
+## Use
+
+    elvm install 0.26.4        # install a specific version
+    elvm use 0.26.4            # pin it for this project (.elephc-version)
+    elvm use 0.26.4 --global   # set the default
+    elvm ls                    # what is installed
+    elvm ls-remote             # what is published
+    elvm doctor                # diagnose PATH and installation problems
+
+Commit `.elephc-version` and every contributor gets the same compiler:
+
+    elvm install              # reads .elephc-version
+
+## How version selection works
+
+The first of these that applies wins:
+
+1. `$ELEPHC_VERSION`
+2. the nearest `.elephc-version`, searching upward from the current directory
+3. the global default set by `elvm use --global`
+
+`latest` in a version file means the highest **installed** version; `elvm
+install latest` means the newest **published** one. Running `elephc` never
+downloads anything — if the selected version is missing, elvm tells you which
+command installs it.
+
+## Platform support
+
+elephc publishes binaries for macOS ARM64 only. Elsewhere, build from source:
+
+    elvm install --build v0.26.4    # requires Rust and git
+
+## License
+
+MIT
