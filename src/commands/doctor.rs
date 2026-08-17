@@ -105,7 +105,17 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
                 "✗ {name} is missing bridge archive(s): {}",
                 missing.join(", ")
             );
-            println!("  reinstall with: elvm install {name} --force");
+            // `elvm install <name> --force` only makes sense for a semver
+            // version; an alias created by `elvm link` has no published
+            // release to reinstall from, so `elvm install dev --force`
+            // fails with "no published elephc release matches dev".
+            if semver::Version::parse(&name).is_ok() {
+                println!("  reinstall with: elvm install {name} --force");
+            } else {
+                println!(
+                    "  re-link it: elvm link <path> --as {name}  (or remove it: elvm uninstall {name})"
+                );
+            }
         }
         if let Some(reason) = quarantined(&dir.join("elephc")) {
             problems += 1;

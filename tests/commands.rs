@@ -1,6 +1,7 @@
 mod support;
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use support::Sandbox;
 
 fn elvm(sandbox: &Sandbox, cwd: &std::path::Path) -> Command {
@@ -328,7 +329,10 @@ fn a_dangling_linked_checkout_stays_visible_and_recoverable() {
         .success()
         .stdout(predicates::str::contains("dev"));
 
-    // `doctor` must report it too, not stay silent about a broken alias.
+    // `doctor` must report it too, not stay silent about a broken alias —
+    // and its fix command must be alias-appropriate. `elvm install dev
+    // --force` cannot work (there is no published release named "dev"), so
+    // the suggestion must be to re-link or remove it instead.
     elvm(&sandbox, &sandbox.home())
         .env(
             "PATH",
@@ -336,7 +340,10 @@ fn a_dangling_linked_checkout_stays_visible_and_recoverable() {
         )
         .arg("doctor")
         .assert()
-        .stdout(predicates::str::contains("dev"));
+        .stdout(predicates::str::contains("dev"))
+        .stdout(predicates::str::contains("elvm link <path> --as dev"))
+        .stdout(predicates::str::contains("elvm uninstall dev"))
+        .stdout(predicates::str::contains("elvm install dev --force").not());
 
     // `uninstall` can now find and remove it — before this fix, the only
     // recovery was `rm ~/.elvm/versions/dev` by hand.
