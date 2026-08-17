@@ -56,13 +56,18 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
         .tempdir_in(paths.tmp())?;
     archive::extract_tar_gz(&cached, staging.path())?;
 
-    install_staged(&destination, staging, &version.to_string())?;
+    install_staged(
+        &destination,
+        staging,
+        &version.to_string(),
+        "the downloaded archive is missing the elephc binary or its bridge archives",
+    )?;
     println!("installed elephc {version}");
     Ok(())
 }
 
-/// Completes an installation by verifying completeness, keeping the staging
-/// directory, atomically replacing the destination, and reporting success.
+/// Completes an installation by verifying completeness and atomically
+/// replacing the destination with the staging directory.
 ///
 /// This defers all destructive operations until after the completeness check,
 /// keeping a working prior installation in place until the last moment.
@@ -70,9 +75,10 @@ pub fn install_staged(
     destination: &Path,
     staging: tempfile::TempDir,
     _version: &str,
+    error_msg: &str,
 ) -> anyhow::Result<()> {
     if !installed::is_complete(staging.path()) {
-        anyhow::bail!("the downloaded archive is missing the elephc binary or its bridge archives");
+        anyhow::bail!("{error_msg}");
     }
 
     // Everything that can fail — the release lookup, checksum fetch,

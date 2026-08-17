@@ -82,7 +82,12 @@ pub fn from_source(paths: &ElvmPaths, git_ref: &str, force: bool) -> anyhow::Res
         }
     }
 
-    crate::install::install_staged(&destination, staging, &name)?;
+    crate::install::install_staged(
+        &destination,
+        staging,
+        &name,
+        "the build did not produce every bridge archive; see the cargo output above",
+    )?;
     println!("installed elephc {name} from source");
     Ok(())
 }

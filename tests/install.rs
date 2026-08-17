@@ -375,3 +375,33 @@ fn ls_remote_marks_releases_with_no_binary_for_this_platform() {
             "  0.25.2  (no binary for this platform)",
         ));
 }
+
+#[test]
+fn a_successful_force_reinstall_replaces_the_working_install() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start("0.26.4");
+    // Pre-install a fake version; note its distinctive output differs from
+    // the fixture tarball's "fake-elephc $*" (no version name in output).
+    sandbox.fake_elephc("0.26.4");
+
+    // Verify the fake is in place before --force
+    let installed = sandbox.elvm_dir().join("versions/0.26.4/elephc");
+    let fake_content = std::fs::read_to_string(&installed).unwrap();
+    assert!(fake_content.contains("fake-elephc 0.26.4 $*"));
+
+    // Force-reinstall from the fixture tarball
+    elvm(&sandbox, &upstream)
+        .args(["install", "0.26.4", "--force"])
+        .assert()
+        .success();
+
+    // The binary should now be from the tarball, not the fake. The tarball
+    // has "fake-elephc $*" with no version name, so this proves the
+    // directory was actually replaced, not left alone.
+    let replaced_content = std::fs::read_to_string(&installed).unwrap();
+    assert!(
+        replaced_content.contains("fake-elephc $*"),
+        "binary should be from tarball: {replaced_content}"
+    );
+    assert!(!replaced_content.contains("fake-elephc 0.26.4"));
+}
