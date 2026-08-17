@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 /// Where a version request came from, for error messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RequestSource {
     Env,
     File(PathBuf),
@@ -13,7 +12,6 @@ pub enum RequestSource {
 
 /// A version request together with its provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct Request {
     pub raw: String,
     pub request: VersionRequest,
@@ -50,7 +48,6 @@ pub fn find_version_file(cwd: &Path, home: &Path) -> Option<PathBuf> {
 
 /// Applies the resolution precedence from the spec: environment, then the
 /// nearest version file, then the global selection.
-#[allow(dead_code)]
 pub fn find_request(paths: &ElvmPaths, cwd: &Path, home: &Path) -> anyhow::Result<Option<Request>> {
     if let Some(value) = std::env::var_os("ELEPHC_VERSION") {
         let raw = value.to_string_lossy().trim().to_string();
@@ -89,7 +86,6 @@ pub fn find_request(paths: &ElvmPaths, cwd: &Path, home: &Path) -> anyhow::Resul
     Ok(None)
 }
 
-#[allow(dead_code)]
 fn read_first_line(path: &Path) -> anyhow::Result<String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;

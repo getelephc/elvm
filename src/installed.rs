@@ -22,7 +22,6 @@ pub struct Installed {
     pub aliases: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl Installed {
     pub fn scan(paths: &ElvmPaths) -> anyhow::Result<Self> {
         let dir = paths.versions();

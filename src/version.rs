@@ -2,7 +2,6 @@ use semver::Version;
 
 /// A version as requested by a user, a `.elephc-version` file, or the global file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum VersionRequest {
     /// A fully specified version: `0.26.4`.
     Exact(Version),
@@ -15,7 +14,6 @@ pub enum VersionRequest {
     Alias(String),
 }
 
-#[allow(dead_code)]
 impl VersionRequest {
     pub fn parse(raw: &str) -> Self {
         let trimmed = raw.trim();
