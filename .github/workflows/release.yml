@@ -23,6 +23,46 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
+      # Every matrix leg does this rewrite independently and locally: it is
+      # deterministic, so all three legs produce identical file contents,
+      # and none of them commits or pushes. Only the release job (below)
+      # commits the bump back to main, once.
+      - name: Set version from tag
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Cargo.toml: rewrite only the first `version = "..."` line, so
+          # a dependency's inline `{ version = "...", ... }` table entry
+          # (which never starts the line) is never touched.
+          awk -v ver="$VERSION" '
+            !done && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); done = 1 }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
+
+          # Cargo.lock: rewrite only the elvm package's own version line,
+          # not the version line of any dependency package.
+          awk -v ver="$VERSION" '
+            /^name = "elvm"$/ { inpkg = 1 }
+            inpkg && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); inpkg = 0 }
+            { print }
+          ' Cargo.lock > Cargo.lock.tmp
+          mv Cargo.lock.tmp Cargo.lock
+
+      # Guards against the failure that motivated this step: a rewrite that
+      # silently does nothing (changed file format, a regex that stops
+      # matching) must not produce a binary mislabelled with the old version.
+      - name: Verify Cargo.toml matches the tag
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          ACTUAL="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          if [ "$ACTUAL" != "$VERSION" ]; then
+            echo "Cargo.toml version is '${ACTUAL}' after the rewrite, but tag ${GITHUB_REF_NAME} expects '${VERSION}'" >&2
+            exit 1
+          fi
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -64,3 +104,47 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
+
+      # Every build leg already rewrote its own local Cargo.toml/Cargo.lock
+      # to build the right binary; none of them committed. This is the one
+      # place that commits the bump back to main, once, after the release
+      # itself is already published. It checks out main specifically
+      # (rather than the tag's commit, which is what checkout@v7 would give
+      # by default here) because main is what the bump is moving forward.
+      #
+      # continue-on-error is deliberate: the assets are what matter for a
+      # release. If this push loses a race against another change to main
+      # (non-fast-forward), that must not turn an otherwise-successful
+      # release red — it only means the next release's rewrite starts from
+      # a Cargo.toml that is one bump further behind, which the rewrite
+      # step handles fine.
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+        continue-on-error: true
+
+      - name: Bump Cargo.toml/Cargo.lock to the released version on main
+        continue-on-error: true
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          awk -v ver="$VERSION" '
+            !done && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); done = 1 }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
+
+          awk -v ver="$VERSION" '
+            /^name = "elvm"$/ { inpkg = 1 }
+            inpkg && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); inpkg = 0 }
+            { print }
+          ' Cargo.lock > Cargo.lock.tmp
+          mv Cargo.lock.tmp Cargo.lock
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit --allow-empty -m "chore: bump version to ${VERSION}"
+          git push origin HEAD:main
