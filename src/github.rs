@@ -5,10 +5,6 @@ use serde::Deserialize;
 /// A published elephc release, reduced to what elvm needs.
 #[derive(Debug, Clone)]
 pub struct Release {
-    // Not read yet; kept for parity with the API response and future use
-    // (e.g. surfacing the tag in `elvm ls-remote`).
-    #[allow(dead_code)]
-    pub tag: String,
     pub version: Version,
     pub assets: Vec<Asset>,
 }
@@ -81,7 +77,6 @@ pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
             continue;
         };
         releases.push(Release {
-            tag: entry.tag_name.clone(),
             version,
             assets: entry
                 .assets

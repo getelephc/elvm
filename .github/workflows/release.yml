@@ -64,19 +64,3 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-
-  deploy-installer:
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Publish the installer worker
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          # worker/wrangler.toml has no account_id. Without this, a token
-          # that can see more than one Cloudflare account fails
-          # non-interactively with "More than one account available but
-          # unable to select one in non-interactive mode."
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: worker
