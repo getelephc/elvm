@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     strategy:
+      # Without this, a failing leg cancels the other and we learn
+      # nothing about the platform that was still running.
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
@@ -21,6 +24,12 @@ jobs:
       - run: cargo test
       - name: End-to-end compile with a real elephc
         if: matrix.os == 'macos-14'
+        # This step calls the GitHub API through `elvm install latest`.
+        # Unauthenticated it gets 60 requests/hour per IP, and runners share
+        # egress addresses, so it fails intermittently with "rate limit
+        # exhausted". The automatic token raises the limit to 1000/hour.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: cargo test --test e2e_macos -- --ignored
       - name: Lint the installer
         if: runner.os == 'Linux'
