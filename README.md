@@ -1,6 +1,33 @@
-# elvm
+<p align="center">
+  <img src="assets/logo-mark.png" alt="elvm logo" width="130">
+</p>
 
-Version manager for [elephc](https://github.com/illegalstudio/elephc).
+<h1 align="center">elvm</h1>
+
+<p align="center">
+  <em>Pin a compiler. Ship the same one everywhere.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/getelephc/elvm/stargazers"><img src="https://img.shields.io/github/stars/getelephc/elvm?style=flat-square&logo=github&logoColor=white&label=stars&color=FF7A1A" alt="Stars"></a>
+  <a href="https://github.com/getelephc/elvm/releases"><img src="https://img.shields.io/github/downloads/getelephc/elvm/total?style=flat-square&logo=github&logoColor=white&label=downloads&color=FF7A1A" alt="Downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/getelephc/elvm?style=flat-square&color=FF7A1A" alt="License: MIT"></a>
+  <a href="https://x.com/nahime0"><img src="https://img.shields.io/badge/Follow-%40nahime0-FF7A1A?style=flat-square&logo=x&logoColor=white" alt="Follow @nahime0 on X"></a>
+</p>
+
+<p align="center">
+  <strong>single binary &middot; no shell hooks &middot; per-project pinning &middot; builds from source</strong>
+</p>
+
+<p align="center">
+  Version manager for <a href="https://github.com/illegalstudio/elephc">elephc</a>, the PHP-to-native compiler. <code>~/.elvm/bin</code> goes on your <code>PATH</code> once; from then on a committed <code>.elephc-version</code> decides which compiler runs, so every contributor and every CI job builds with the same one. No shell function to source and no <code>cd</code> hook &mdash; a shim resolves the version and <code>exec</code>s the real binary, so exit codes, signals and TTY behaviour are indistinguishable from calling <code>elephc</code> directly.
+</p>
+
+<p align="center">
+  <a href="https://elephc.dev"><strong>Official Website</strong></a>
+</p>
+
+---
 
 ## Install
 
