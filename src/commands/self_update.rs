@@ -2,7 +2,7 @@ use crate::download;
 use crate::paths::ElvmPaths;
 use crate::target;
 
-const ELVM_REPO: &str = "illegalstudio/elvm";
+const ELVM_REPO: &str = "getelephc/elvm";
 
 /// Replaces the elvm binary in place.
 ///

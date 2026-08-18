@@ -31,7 +31,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Serves `illegalstudio/elvm`'s "latest release" endpoint plus a tarball and
+/// Serves `getelephc/elvm`'s "latest release" endpoint plus a tarball and
 /// checksum for one version, in the shape `self_update::run` expects.
 struct Upstream {
     server: MockServer,
@@ -57,7 +57,7 @@ impl Upstream {
         );
         server.mock(|when, then| {
             when.method(GET)
-                .path("/repos/illegalstudio/elvm/releases/latest");
+                .path("/repos/getelephc/elvm/releases/latest");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(release.clone());

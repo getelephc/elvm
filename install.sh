@@ -4,7 +4,7 @@
 set -eu
 
 main() {
-    repo="illegalstudio/elvm"
+    repo="getelephc/elvm"
     modify_path=1
     assume_yes=0
     for arg in "$@"; do
