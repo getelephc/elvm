@@ -39,7 +39,12 @@ command installs it.
 
 ## Platform support
 
-elephc publishes binaries for macOS ARM64 only. Elsewhere, build from source:
+Which platforms have a downloadable binary is a property of each elephc
+release, not a fixed list — check `elvm ls-remote` for the version and
+platform you need. As of elephc v0.25.2, releases publish macOS ARM64
+(`aarch64-apple-darwin`), Linux x86_64 (`x86_64-unknown-linux-gnu`), and Linux
+ARM64 (`aarch64-unknown-linux-gnu`); older releases (through v0.24.x) are
+macOS ARM64 only. Wherever a binary isn't published, build from source:
 
     elvm install --build v0.26.4    # requires Rust and git
 

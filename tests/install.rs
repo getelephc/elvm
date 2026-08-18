@@ -107,18 +107,42 @@ impl Upstream {
         Self { server }
     }
 
-    /// Serves only a 403 (rate-limited) response for the releases listing,
-    /// and nothing else — no tarball or checksum routes exist at all. Used
-    /// to prove the unpublished-target check runs before any network call:
-    /// if it didn't, this would surface as a rate-limit error instead of
-    /// the "no published binary" message.
-    fn start_rate_limited() -> Self {
+    /// Serves a releases list plus a tarball and matching checksum for one
+    /// version, with assets named for an explicit `target` rather than
+    /// `elvm_target()`. Used to prove a release that actually carries the
+    /// host's asset installs cleanly on a non-macOS host, without touching
+    /// every other fixture's default (macOS) asset naming.
+    fn start_for_target(version: &str, target: &str) -> Self {
         let server = MockServer::start();
+        let tarball = fake_release_tarball();
+
+        let tar_name = format!("elephc-v{version}-{target}.tar.gz");
+        let tar_url = server.url(format!("/download/{tar_name}"));
+        let sha_url = server.url(format!("/download/{tar_name}.sha256"));
+
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/download/{tar_name}"));
+            then.status(200).body(tarball.clone());
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/download/{tar_name}.sha256"));
+            then.status(200)
+                .body(format!("{}  {tar_name}\n", sha256_hex(&tarball)));
+        });
         server.mock(|when, then| {
             when.method(GET)
                 .path("/repos/illegalstudio/elephc/releases");
-            then.status(403).header("x-ratelimit-reset", "0");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"[{{"tag_name":"v{version}","assets":[
+                        {{"name":"{tar_name}","browser_download_url":"{tar_url}"}},
+                        {{"name":"{tar_name}.sha256","browser_download_url":"{sha_url}"}}
+                    ]}}]"#,
+                ));
         });
+
         Self { server }
     }
 
@@ -179,8 +203,10 @@ impl Upstream {
     }
 }
 
-/// The one target elephc publishes; these tests exercise the download path,
-/// which only exists for it.
+/// The default fixture target: most tests exercise the download path
+/// against this one, unrelated to which targets elephc actually publishes
+/// for (see `Upstream::start_for_target` and `start_with_missing_platform`
+/// for fixtures that shape assets for a different target on purpose).
 fn elvm_target() -> &'static str {
     "aarch64-apple-darwin"
 }
@@ -301,28 +327,63 @@ fn reinstalling_without_force_is_refused() {
         .stderr(predicates::str::contains("--force"));
 }
 
+/// Whether a binary exists for a host is a property of the release data, not
+/// a fixed platform list: a release that actually carries the requested
+/// host's asset installs cleanly on a non-macOS target. This is the
+/// regression guard for the bug itself — under the old hardcoded
+/// `PUBLISHED_TARGETS` constant, this failed even though the binary existed.
 #[test]
-fn installing_on_an_unpublished_target_points_at_build() {
+fn installing_a_release_that_carries_the_hosts_asset_succeeds_on_a_non_macos_target() {
     let sandbox = Sandbox::new();
-    let upstream = Upstream::start("0.26.4");
+    let target = "x86_64-unknown-linux-gnu";
+    let upstream = Upstream::start_for_target("0.26.4", target);
 
     let mut cmd = elvm(&sandbox, &upstream);
-    cmd.env("ELVM_TARGET", "x86_64-unknown-linux-gnu")
+    cmd.env("ELVM_TARGET", target)
         .args(["install", "0.26.4"])
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("no published binary"))
-        .stderr(predicates::str::contains("--build"));
+        .success();
+
+    assert!(sandbox.elvm_dir().join("versions/0.26.4/elephc").is_file());
 }
 
+/// When the *requested* release has no binary for the host but a *later*
+/// release does, the error names that later release instead of pointing at
+/// `--build` — `--build` is only right when nothing published works here at
+/// all. `start_with_missing_platform("0.24.3", "0.25.2")` builds exactly
+/// this shape for a Linux host: "0.24.3" (the `available` param) gets only
+/// the fixture's default `elvm_target()` asset (macOS), and "0.25.2" (the
+/// `unavailable` param) gets its hardcoded `x86_64-unknown-linux-gnu` asset
+/// — so requesting "0.24.3" under a Linux host has no binary, while "0.25.2"
+/// does and is the only (hence earliest) release that does.
 #[test]
-fn unpublished_target_is_rejected_before_any_network_call() {
+fn requesting_a_version_with_no_host_binary_names_the_earliest_release_that_has_one() {
     let sandbox = Sandbox::new();
-    // No tarball or checksum route exists on this server at all, and the
-    // releases listing itself is rate-limited. If the target check ran
-    // after resolving the release list (as it used to), this would
-    // surface as "GitHub rate limit exhausted" instead.
-    let upstream = Upstream::start_rate_limited();
+    let upstream = Upstream::start_with_missing_platform("0.24.3", "0.25.2");
+
+    let mut cmd = elvm(&sandbox, &upstream);
+    let assert = cmd
+        .env("ELVM_TARGET", "x86_64-unknown-linux-gnu")
+        .args(["install", "0.24.3"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+
+    assert!(stderr.contains("no published binary"), "{stderr}");
+    assert!(stderr.contains("0.25.2"), "{stderr}");
+    assert!(stderr.contains("elvm install 0.25.2"), "{stderr}");
+    // A release that works for this host exists, so this must not fall back
+    // to suggesting a from-source build.
+    assert!(!stderr.contains("--build"), "{stderr}");
+}
+
+/// When *no* published release carries a binary for the host at all, the
+/// error falls back to `--build` — the only case where that is actually the
+/// fix.
+#[test]
+fn requesting_a_version_falls_back_to_build_when_no_release_has_a_host_binary() {
+    let sandbox = Sandbox::new();
+    let upstream = Upstream::start("0.26.4");
 
     let mut cmd = elvm(&sandbox, &upstream);
     cmd.env("ELVM_TARGET", "x86_64-unknown-linux-gnu")

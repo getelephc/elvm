@@ -11,13 +11,6 @@ use std::path::Path;
 /// Downloads, verifies, and atomically installs a published release.
 pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow::Result<()> {
     let host = target::host()?;
-    if !target::elephc_publishes(&host) {
-        anyhow::bail!(
-            "no published binary for {host}\n  \
-             elephc publishes macOS ARM64 only; build it instead:\n  \
-             elvm install --build v{version}"
-        );
-    }
 
     paths.ensure_dirs()?;
     let _lock = InstallLock::acquire(paths)?;
@@ -38,9 +31,15 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
     let tarball_name = github::tarball_name(version, &host);
     let checksum_name = github::checksum_name(version, &host);
 
+    // Whether a binary for `host` exists is a property of the release data,
+    // not a fixed set of platforms — so this is discovered by asking the
+    // release itself, same as `ls_remote::has_binary`, rather than
+    // consulting a constant. When it's missing, `no_binary_error` searches
+    // every release for the earliest one that does carry it, which is
+    // almost always more useful than "build it yourself".
     let tarball_asset = release
         .asset(&tarball_name)
-        .ok_or_else(|| anyhow::anyhow!("release v{version} has no asset {tarball_name}"))?;
+        .ok_or_else(|| no_binary_error(&releases, version, &host))?;
     let checksum_asset = release
         .asset(&checksum_name)
         .ok_or_else(|| anyhow::anyhow!("release v{version} has no asset {checksum_name}"))?;
@@ -63,6 +62,35 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
     )?;
     println!("installed elephc {version}");
     Ok(())
+}
+
+/// Builds the error for a requested version with no binary for `host`.
+///
+/// Names whichever published release is the *earliest* to carry one for
+/// this host, found by scanning every release rather than a fixed platform
+/// list — that's almost always the actionable fix (install a version that
+/// works, or build this exact one). `--build` is only suggested when no
+/// release at all has a binary for this host, since only then is it true
+/// that nothing short of a local build will do.
+fn no_binary_error(releases: &[github::Release], version: &Version, host: &str) -> anyhow::Error {
+    let earliest = releases
+        .iter()
+        .filter(|r| r.asset(&github::tarball_name(&r.version, host)).is_some())
+        .map(|r| &r.version)
+        .min();
+
+    match earliest {
+        Some(earliest) => anyhow::anyhow!(
+            "no published binary for {host} in elephc {version}\n  \
+             the earliest release with one is {earliest}; install that instead:\n  \
+             elvm install {earliest}"
+        ),
+        None => anyhow::anyhow!(
+            "no published binary for {host}\n  \
+             no elephc release publishes one for this platform; build it instead:\n  \
+             elvm install --build v{version}"
+        ),
+    }
 }
 
 /// Completes an installation by verifying completeness and atomically
@@ -96,4 +124,59 @@ pub fn install_staged(
     }
     std::fs::rename(staged, destination)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::{Asset, Release};
+
+    fn release(version: &str, target: Option<&str>) -> Release {
+        let version = Version::parse(version).unwrap();
+        let assets = match target {
+            Some(target) => vec![Asset {
+                name: github::tarball_name(&version, target),
+                url: String::new(),
+            }],
+            None => Vec::new(),
+        };
+        Release { version, assets }
+    }
+
+    #[test]
+    fn no_binary_error_names_the_earliest_release_that_has_one() {
+        let releases = vec![
+            release("0.26.4", Some("x86_64-unknown-linux-gnu")),
+            release("0.25.2", Some("x86_64-unknown-linux-gnu")),
+            release("0.24.3", Some("aarch64-apple-darwin")),
+        ];
+        let err = no_binary_error(
+            &releases,
+            &Version::parse("0.24.3").unwrap(),
+            "x86_64-unknown-linux-gnu",
+        );
+        let message = err.to_string();
+        assert!(message.contains("0.24.3"), "{message}");
+        assert!(message.contains("0.25.2"), "{message}");
+        assert!(message.contains("elvm install 0.25.2"), "{message}");
+        // A version this platform *can* install exists, so the fix must not
+        // fall back to suggesting a from-source build.
+        assert!(!message.contains("--build"), "{message}");
+    }
+
+    #[test]
+    fn no_binary_error_falls_back_to_build_when_no_release_has_one() {
+        let releases = vec![release("0.26.4", Some("aarch64-apple-darwin"))];
+        let err = no_binary_error(
+            &releases,
+            &Version::parse("0.26.4").unwrap(),
+            "riscv64gc-unknown-linux-gnu",
+        );
+        let message = err.to_string();
+        assert!(message.contains("--build"), "{message}");
+        assert!(
+            message.contains("elvm install --build v0.26.4"),
+            "{message}"
+        );
+    }
 }
