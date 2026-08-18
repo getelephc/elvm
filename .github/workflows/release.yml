@@ -26,42 +26,12 @@ jobs:
       # Every matrix leg does this rewrite independently and locally: it is
       # deterministic, so all three legs produce identical file contents,
       # and none of them commits or pushes. Only the release job (below)
-      # commits the bump back to main, once.
+      # commits the bump back to main, once. .github/set-version.sh also
+      # verifies the rewrite took effect, so a silent no-op here (changed
+      # file format, a regex that stops matching) fails the leg loudly
+      # instead of building a binary mislabelled with the old version.
       - name: Set version from tag
-        run: |
-          set -eu
-          VERSION="${GITHUB_REF_NAME#v}"
-
-          # Cargo.toml: rewrite only the first `version = "..."` line, so
-          # a dependency's inline `{ version = "...", ... }` table entry
-          # (which never starts the line) is never touched.
-          awk -v ver="$VERSION" '
-            !done && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); done = 1 }
-            { print }
-          ' Cargo.toml > Cargo.toml.tmp
-          mv Cargo.toml.tmp Cargo.toml
-
-          # Cargo.lock: rewrite only the elvm package's own version line,
-          # not the version line of any dependency package.
-          awk -v ver="$VERSION" '
-            /^name = "elvm"$/ { inpkg = 1 }
-            inpkg && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); inpkg = 0 }
-            { print }
-          ' Cargo.lock > Cargo.lock.tmp
-          mv Cargo.lock.tmp Cargo.lock
-
-      # Guards against the failure that motivated this step: a rewrite that
-      # silently does nothing (changed file format, a regex that stops
-      # matching) must not produce a binary mislabelled with the old version.
-      - name: Verify Cargo.toml matches the tag
-        run: |
-          set -eu
-          VERSION="${GITHUB_REF_NAME#v}"
-          ACTUAL="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
-          if [ "$ACTUAL" != "$VERSION" ]; then
-            echo "Cargo.toml version is '${ACTUAL}' after the rewrite, but tag ${GITHUB_REF_NAME} expects '${VERSION}'" >&2
-            exit 1
-          fi
+        run: sh .github/set-version.sh "${GITHUB_REF_NAME#v}"
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -124,24 +94,21 @@ jobs:
           ref: main
         continue-on-error: true
 
+      # .github/set-version.sh does the same rewrite as the build job, then
+      # verifies it: if main's Cargo.toml has drifted from the format the
+      # rewrite expects (e.g. a reformatting commit landed between the tag
+      # push and this job), the script fails loudly instead of awk silently
+      # matching nothing, `git commit --allow-empty` succeeding anyway, and
+      # this job reporting green while leaving main's version stale. Because
+      # this step also has continue-on-error, that failure still won't turn
+      # the release red — see the note above — but it will show up as a
+      # failed step instead of a silent no-op commit.
       - name: Bump Cargo.toml/Cargo.lock to the released version on main
         continue-on-error: true
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME#v}"
-
-          awk -v ver="$VERSION" '
-            !done && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); done = 1 }
-            { print }
-          ' Cargo.toml > Cargo.toml.tmp
-          mv Cargo.toml.tmp Cargo.toml
-
-          awk -v ver="$VERSION" '
-            /^name = "elvm"$/ { inpkg = 1 }
-            inpkg && /^version = / { sub(/version = ".*"/, "version = \"" ver "\""); inpkg = 0 }
-            { print }
-          ' Cargo.lock > Cargo.lock.tmp
-          mv Cargo.lock.tmp Cargo.lock
+          sh .github/set-version.sh "$VERSION"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
