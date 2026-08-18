@@ -70,7 +70,7 @@ Environment:
 EOF
 }
 
-say() { printf '%s\n' "$1"; }
+say() { printf '%s\n' "$1" >&2; }
 err() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
 need() {

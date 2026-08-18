@@ -406,10 +406,13 @@ esac
         "installer must exit 0 with no controlling tty (the CRITICAL 1 regression \
          aborted here with ENXIO after installing the binary):\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // `say` writes to stderr, matching rustup's installer: progress and
+    // instructions are diagnostics, not output, so they survive a caller
+    // redirecting stdout.
     assert!(
-        stdout.contains("add this line to") && stdout.contains("yourself:"),
+        stderr.contains("add this line to") && stderr.contains("yourself:"),
         "installer must print the manual-PATH instructions when neither stdin nor \
-         /dev/tty is usable:\nstdout: {stdout}"
+         /dev/tty is usable:\nstderr: {stderr}"
     );
     assert!(
         elvm_dir.join("bin/elvm").is_file(),
