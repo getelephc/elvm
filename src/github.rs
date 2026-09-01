@@ -1,3 +1,4 @@
+use crate::nightly::Channel;
 use crate::paths::ElvmPaths;
 use semver::Version;
 use serde::Deserialize;
@@ -28,6 +29,17 @@ struct RawRelease {
     prerelease: bool,
     #[serde(default)]
     draft: bool,
+    /// `Nightly <version>` on a nightly release. Unused for releases, whose
+    /// version comes from the tag.
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    target_commitish: String,
+    /// When the release was published. Deliberately not `created_at`, which
+    /// is the *tag's* timestamp and runs ahead of publication by however long
+    /// the build took — 49 minutes on the first nightly.
+    #[serde(default)]
+    published_at: String,
 }
 
 #[derive(Deserialize)]
@@ -42,12 +54,57 @@ impl Release {
     }
 }
 
+/// A published nightly, from either the rolling tag or a dated one.
+///
+/// `version` is kept as a string on purpose: it parses as semver, but
+/// comparing nightlies that way is wrong twice over (see `crate::nightly`),
+/// so elvm never puts one in a `Version`.
+#[derive(Debug, Clone)]
+pub struct NightlyRelease {
+    pub tag: String,
+    pub version: String,
+    pub commit: String,
+    pub published_at: String,
+    pub assets: Vec<Asset>,
+}
+
+impl NightlyRelease {
+    pub fn asset(&self, name: &str) -> Option<&Asset> {
+        self.assets.iter().find(|a| a.name == name)
+    }
+
+    /// The triples this nightly actually publishes, for the error shown when
+    /// the host is not among them.
+    pub fn targets(&self) -> Vec<String> {
+        self.assets
+            .iter()
+            .filter_map(|a| {
+                a.name
+                    .strip_prefix("elephc-nightly-")?
+                    .strip_suffix(".tar.gz")
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+}
+
 pub fn tarball_name(version: &Version, target: &str) -> String {
     format!("elephc-v{version}-{target}.tar.gz")
 }
 
 pub fn checksum_name(version: &Version, target: &str) -> String {
     format!("{}.sha256", tarball_name(version, target))
+}
+
+/// Nightly assets carry no version in their name — the tag disambiguates the
+/// URL — so the same filename appears under `nightly` and under every dated
+/// tag, holding the same bytes.
+pub fn nightly_tarball_name(target: &str) -> String {
+    format!("elephc-nightly-{target}.tar.gz")
+}
+
+pub fn nightly_checksum_name(target: &str) -> String {
+    format!("{}.sha256", nightly_tarball_name(target))
 }
 
 fn api_base() -> String {
@@ -92,6 +149,54 @@ pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
     Ok(releases)
 }
 
+/// Parses the nightly entries out of the same release list, newest first.
+///
+/// Only the dated tags come back; the rolling `nightly` tag is deliberately
+/// left out, because it duplicates the newest dated build's artifacts and
+/// listing it beside them would show the same build twice. Callers that want
+/// the rolling channel ask for it by tag with `fetch_nightly`.
+///
+/// Ordered by `published_at`, never by tag name: `nightly-20260901.10` sorts
+/// before `nightly-20260901.2` lexicographically, which would name the wrong
+/// build as the newest.
+pub fn parse_nightlies(json: &str) -> anyhow::Result<Vec<NightlyRelease>> {
+    let raw: Vec<RawRelease> = serde_json::from_str(json)?;
+    let mut nightlies: Vec<NightlyRelease> = raw
+        .into_iter()
+        .filter(|entry| !entry.draft)
+        .filter(|entry| matches!(Channel::parse(&entry.tag_name), Some(Channel::Dated(_))))
+        .map(into_nightly)
+        .collect();
+    nightlies.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+    Ok(nightlies)
+}
+
+/// Upstream names every nightly release `Nightly <version>`; the tag is the
+/// fallback so a renamed release degrades to a less informative listing
+/// rather than an empty version.
+fn into_nightly(entry: RawRelease) -> NightlyRelease {
+    let version = entry
+        .name
+        .strip_prefix("Nightly ")
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&entry.tag_name)
+        .to_string();
+    NightlyRelease {
+        tag: entry.tag_name,
+        version,
+        commit: entry.target_commitish,
+        published_at: entry.published_at,
+        assets: entry
+            .assets
+            .into_iter()
+            .map(|a| Asset {
+                name: a.name,
+                url: a.browser_download_url,
+            })
+            .collect(),
+    }
+}
+
 /// Requests per page, and the hard cap on pages fetched.
 ///
 /// The cap is a backstop against a misbehaving API returning full pages
@@ -100,18 +205,41 @@ pub fn parse_releases(json: &str) -> anyhow::Result<Vec<Release>> {
 const PER_PAGE: u32 = 100;
 const MAX_PAGES: u32 = 10;
 
-/// Lists releases, serving a cached response when it is fresh enough.
-///
+fn client() -> anyhow::Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .user_agent(concat!("elvm/", env!("CARGO_PKG_VERSION")))
+        .build()?)
+}
+
 /// Unauthenticated GitHub allows 60 requests per hour per IP, which CI runners
-/// on shared egress do exhaust, so responses are cached and a token is sent
-/// when the environment provides one.
+/// on shared egress do exhaust. A 403 is reported with the reset time and the
+/// variable that raises the limit, rather than as a bare HTTP status.
+fn rate_limit_error(response: &reqwest::blocking::Response) -> Option<anyhow::Error> {
+    if response.status() != reqwest::StatusCode::FORBIDDEN {
+        return None;
+    }
+    let reset = response
+        .headers()
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    Some(anyhow::anyhow!(
+        "GitHub rate limit exhausted (resets at unix time {reset})\n  \
+         set GITHUB_TOKEN or GH_TOKEN to raise the limit"
+    ))
+}
+
+/// Every release as one JSON array, served from cache when it is fresh.
 ///
 /// GitHub paginates at 100 releases per page; elephc has published more than
 /// that, so a single request silently drops the oldest releases. This fetches
 /// pages until one comes back short (or empty), merging them into one JSON
-/// array before caching and parsing — `parse_releases` still sees exactly the
-/// shape it always has, just assembled from more than one response.
-pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Release>> {
+/// array before caching — so each parser above sees exactly the shape it
+/// would have seen from a single response, just assembled from several.
+///
+/// Both parsers read this one payload, so listing nightlies alongside
+/// releases costs no extra request.
+fn fetch_releases_json(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<String> {
     let cache = paths.releases_json();
     if !refresh {
         if let Ok(metadata) = std::fs::metadata(&cache) {
@@ -121,8 +249,8 @@ pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Rel
             }) {
                 if age < CACHE_TTL {
                     if let Ok(text) = std::fs::read_to_string(&cache) {
-                        if let Ok(releases) = parse_releases(&text) {
-                            return Ok(releases);
+                        if serde_json::from_str::<Vec<RawRelease>>(&text).is_ok() {
+                            return Ok(text);
                         }
                     }
                 }
@@ -130,9 +258,7 @@ pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Rel
         }
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("elvm/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let client = client()?;
     let token = github_token();
 
     let mut entries: Vec<serde_json::Value> = Vec::new();
@@ -147,16 +273,8 @@ pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Rel
         }
 
         let response = request.send()?;
-        if response.status() == reqwest::StatusCode::FORBIDDEN {
-            let reset = response
-                .headers()
-                .get("x-ratelimit-reset")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown");
-            anyhow::bail!(
-                "GitHub rate limit exhausted (resets at unix time {reset})\n  \
-                 set GITHUB_TOKEN or GH_TOKEN to raise the limit"
-            );
+        if let Some(err) = rate_limit_error(&response) {
+            return Err(err);
         }
         let body = response.error_for_status()?.text()?;
         let page_entries: Vec<serde_json::Value> = serde_json::from_str(&body)?;
@@ -168,13 +286,51 @@ pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Rel
     }
 
     let merged = serde_json::to_string(&serde_json::Value::Array(entries))?;
-    let releases = parse_releases(&merged)?;
-
     if let Some(parent) = cache.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&cache, &merged);
-    Ok(releases)
+    Ok(merged)
+}
+
+/// Lists releases, serving a cached response when it is fresh enough.
+pub fn list_releases(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Release>> {
+    parse_releases(&fetch_releases_json(paths, refresh)?)
+}
+
+/// Lists the dated nightlies, newest first, from the same cached payload as
+/// `list_releases`.
+pub fn list_nightlies(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<NightlyRelease>> {
+    parse_nightlies(&fetch_releases_json(paths, refresh)?)
+}
+
+/// Fetches one nightly by tag, or `None` when that tag is not published.
+///
+/// Asked for by tag rather than found in the release list for two reasons:
+/// it is a single unpaginated request, and it is never served from the cache
+/// — which matters for the rolling tag, whose whole purpose is to have moved
+/// since last time.
+///
+/// A missing tag is `None`, not an error: the workflow skips nights when
+/// `main` is red or unchanged, so "no nightly right now" is a normal state,
+/// and dated tags are pruned once they leave the retention window.
+pub fn fetch_nightly(tag: &str) -> anyhow::Result<Option<NightlyRelease>> {
+    let url = format!("{}/repos/{REPO}/releases/tags/{tag}", api_base());
+    let mut request = client()?.get(&url);
+    if let Some(token) = github_token() {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request.send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if let Some(err) = rate_limit_error(&response) {
+        return Err(err);
+    }
+    let body = response.error_for_status()?.text()?;
+    let entry: RawRelease = serde_json::from_str(&body)?;
+    Ok(Some(into_nightly(entry)))
 }
 
 fn github_token() -> Option<String> {
@@ -227,6 +383,82 @@ mod tests {
         let releases = parse_releases(json).unwrap();
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].version, Version::parse("0.26.4").unwrap());
+    }
+
+    #[test]
+    fn nightly_asset_names_carry_no_version() {
+        assert_eq!(
+            nightly_tarball_name("aarch64-apple-darwin"),
+            "elephc-nightly-aarch64-apple-darwin.tar.gz"
+        );
+        assert_eq!(
+            nightly_checksum_name("aarch64-apple-darwin"),
+            "elephc-nightly-aarch64-apple-darwin.tar.gz.sha256"
+        );
+    }
+
+    #[test]
+    fn parses_dated_nightlies_newest_first_and_leaves_out_the_rolling_tag() {
+        let json = r#"[
+          {"tag_name":"nightly","name":"Nightly 0.26.5-nightly.20260903+gccc",
+           "target_commitish":"ccc","published_at":"2026-09-03T03:40:00Z","prerelease":true,"assets":[]},
+          {"tag_name":"nightly-20260901.2","name":"Nightly 0.26.5-nightly.20260901+gbbb",
+           "target_commitish":"bbb","published_at":"2026-09-01T18:00:00Z","prerelease":true,"assets":[]},
+          {"tag_name":"nightly-20260901.10","name":"Nightly 0.26.5-nightly.20260901+gddd",
+           "target_commitish":"ddd","published_at":"2026-09-01T21:00:00Z","prerelease":true,"assets":[]},
+          {"tag_name":"nightly-20260903","name":"Nightly 0.26.5-nightly.20260903+gccc",
+           "target_commitish":"ccc","published_at":"2026-09-03T03:40:00Z","prerelease":true,"assets":[]},
+          {"tag_name":"v0.26.5","assets":[]}
+        ]"#;
+        let nightlies = parse_nightlies(json).unwrap();
+        let tags: Vec<&str> = nightlies.iter().map(|n| n.tag.as_str()).collect();
+        // Newest first, by publication time — by name, `.10` would sort
+        // before `.2` and this order would be wrong.
+        assert_eq!(
+            tags,
+            vec![
+                "nightly-20260903",
+                "nightly-20260901.10",
+                "nightly-20260901.2"
+            ]
+        );
+        assert_eq!(nightlies[0].version, "0.26.5-nightly.20260903+gccc");
+        assert_eq!(nightlies[0].commit, "ccc");
+    }
+
+    #[test]
+    fn nightlies_never_appear_among_releases() {
+        // Both directions of the separation, on one payload: the nightly
+        // tags are invisible to `parse_releases` (they are prereleases, and
+        // their tags are not semver), and `v0.26.5` is invisible to
+        // `parse_nightlies`.
+        let json = r#"[
+          {"tag_name":"nightly","prerelease":true,"assets":[]},
+          {"tag_name":"nightly-20260901","prerelease":true,"assets":[]},
+          {"tag_name":"v0.26.5","assets":[]}
+        ]"#;
+        let releases = parse_releases(json).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].version, Version::parse("0.26.5").unwrap());
+        let nightlies = parse_nightlies(json).unwrap();
+        assert_eq!(nightlies.len(), 1);
+        assert_eq!(nightlies[0].tag, "nightly-20260901");
+    }
+
+    #[test]
+    fn a_nightly_without_a_name_falls_back_to_its_tag() {
+        let json = r#"[{"tag_name":"nightly-20260901","prerelease":true,"assets":[
+          {"name":"elephc-nightly-x86_64-unknown-linux-gnu.tar.gz","browser_download_url":"https://example.test/a"},
+          {"name":"elephc-nightly-aarch64-apple-darwin.tar.gz","browser_download_url":"https://example.test/b"},
+          {"name":"elephc-nightly-aarch64-apple-darwin.tar.gz.sha256","browser_download_url":"https://example.test/c"}
+        ]}]"#;
+        let nightlies = parse_nightlies(json).unwrap();
+        assert_eq!(nightlies[0].version, "nightly-20260901");
+        // `.sha256` assets are not targets.
+        assert_eq!(
+            nightlies[0].targets(),
+            vec!["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+        );
     }
 
     #[test]

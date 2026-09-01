@@ -26,6 +26,12 @@ pub fn run(paths: &ElvmPaths, version: Option<&str>, force: bool) -> anyhow::Res
     };
 
     let request = VersionRequest::parse(&raw);
+    // Routed before the release list is fetched: a nightly is addressed by
+    // tag through its own endpoint, and never appears among releases.
+    if let VersionRequest::Nightly(channel) = &request {
+        return install::nightly(paths, channel, force);
+    }
+
     let published: Vec<semver::Version> = github::list_releases(paths, false)?
         .into_iter()
         .map(|release| release.version)

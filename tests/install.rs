@@ -497,6 +497,11 @@ fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
 /// to separate from, that's the same seam twice, producing two blank lines
 /// back to back instead of one. Pins the fix by asserting the exact
 /// expected bytes, not just "some blank line exists somewhere".
+///
+/// The nightly block now sits at that same seam, between the header and the
+/// rows — where it has to be, because the last line of `ls-remote` is the
+/// newest release and an unsupported channel must not displace it. So this
+/// pins both separators at once.
 #[test]
 fn ls_remote_prints_exactly_one_blank_line_when_everything_is_one_series() {
     let sandbox = Sandbox::new();
@@ -508,7 +513,16 @@ fn ls_remote_prints_exactly_one_blank_line_when_everything_is_one_series() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
 
-    let expected = "3 releases in 1 series — elvm ls-remote --all for every patch\n\n  0.26.0\n  0.26.1\n  0.26.2  ← latest\n";
+    let expected = concat!(
+        "3 releases in 1 series — elvm ls-remote --all for every patch\n",
+        "\n",
+        "nightly — unsupported builds of main; elvm install nightly takes the newest\n",
+        "  no dated build to pin right now\n",
+        "\n",
+        "  0.26.0\n",
+        "  0.26.1\n",
+        "  0.26.2  ← latest\n",
+    );
     assert_eq!(stdout, expected, "{stdout:?}");
 }
 

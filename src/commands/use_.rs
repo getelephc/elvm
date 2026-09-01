@@ -16,6 +16,18 @@ pub fn run(paths: &ElvmPaths, raw: &str, global: bool) -> anyhow::Result<()> {
     let target = if global {
         paths.global_version_file()
     } else {
+        // A `.elephc-version` is meant to be committed, and the whole point
+        // of committing one is that everybody builds with the same compiler.
+        // `nightly` cannot deliver that: it names whichever build was newest
+        // when each person last installed. Said once, here, rather than
+        // refused — testing `main` across a team is a legitimate thing to
+        // want, it just is not a pin.
+        if matches!(&request, VersionRequest::Nightly(c) if c.is_rolling()) {
+            eprintln!(
+                "warning: nightly moves; committing it to {VERSION_FILE} does not pin a compiler"
+            );
+            eprintln!("  for a build that will not change, pin a dated one: elvm ls-remote");
+        }
         let (cwd, _) = super::context()?;
         cwd.join(VERSION_FILE)
     };

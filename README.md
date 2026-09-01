@@ -41,6 +41,7 @@ new shell for the `PATH` to update.
 ## Use
 
     elvm install 0.26.4        # install a specific version
+    elvm install nightly       # install the newest build of main
     elvm use 0.26.4            # pin it for this project (.elephc-version)
     elvm use 0.26.4 --global   # set the default
     elvm ls                    # what is installed
@@ -63,6 +64,34 @@ The first of these that applies wins:
 install latest` means the newest **published** one. Running `elephc` never
 downloads anything — if the selected version is missing, elvm tells you which
 command installs it.
+
+## Nightly builds
+
+elephc publishes unattended builds of `main` as pre-releases. They are not
+supported: no compatibility, stability, or upgrade guarantees.
+
+    elvm install nightly       # the newest build of main
+    elvm install nightly-20260901   # one specific build
+
+`nightly` is a channel, not a version. Installing it again is an update, not
+an error, and it never takes part in version selection: `latest` and prefixes
+like `0.26` only ever match released versions, so a nightly on disk cannot
+change what an existing `.elephc-version` resolves to. `elvm ls-remote` lists
+the dated builds; `elvm ls` and `elvm doctor` show which one is installed,
+since every rolling install is called `nightly` no matter which build is in
+it.
+
+**`nightly` is not a pin.** It names whichever build was newest when each
+person last installed it, so a committed `.elephc-version` saying `nightly`
+gives different compilers to different machines — the one thing a version
+file exists to prevent. A dated tag like `nightly-20260901` *is* a pin,
+because upstream never republishes one.
+
+Dated builds are kept upstream for 14 nightlies and then deleted, tag
+included. So a dated pin is reproducible for about two weeks and no longer:
+after that, only someone who already has it installed — or still has the
+tarball in `~/.elvm/cache/downloads` — can reinstall it. Pin a release for
+anything that has to build a year from now.
 
 ## Platform support
 

@@ -1,4 +1,5 @@
 use crate::installed::{self, Installed};
+use crate::nightly::Stamp;
 use crate::paths::ElvmPaths;
 
 pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
@@ -22,11 +23,18 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
         };
         let dir = paths.version_dir(&name);
         let note = if installed::is_complete(&dir) {
-            ""
+            String::new()
         } else {
-            "  (incomplete)"
+            "  (incomplete)".to_string()
         };
-        println!("{marker} {name}{note}");
+        // A nightly directory's name says nothing about which build is in it
+        // — `nightly` is the same name every night — so the stamp written at
+        // install time is what makes the listing mean anything.
+        let build = match Stamp::read(&dir) {
+            Some(stamp) => format!("  {}", stamp.summary()),
+            None => String::new(),
+        };
+        println!("{marker} {name}{build}{note}");
     }
     Ok(())
 }
