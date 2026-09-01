@@ -10,6 +10,12 @@ pub fn run(paths: &ElvmPaths, raw_path: &str, name: &str) -> anyhow::Result<()> 
     if semver::Version::parse(name).is_ok() {
         anyhow::bail!("{name} looks like a release version; pick a name like \"dev\"");
     }
+    // `versions/nightly` and `versions/nightly-<date>` are where the nightly
+    // channel installs. Letting a link take one of those names would make
+    // `elvm install nightly` overwrite a checkout the user still points at.
+    if crate::nightly::Channel::parse(name).is_some() {
+        anyhow::bail!("{name} is reserved for the nightly channel; pick a name like \"dev\"");
+    }
 
     let given = if std::path::Path::new(raw_path).is_absolute() {
         PathBuf::from(raw_path)

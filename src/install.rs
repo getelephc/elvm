@@ -3,6 +3,7 @@ use crate::download;
 use crate::github;
 use crate::installed;
 use crate::lock::InstallLock;
+use crate::nightly::{Channel, Stamp};
 use crate::paths::ElvmPaths;
 use crate::target;
 use semver::Version;
@@ -62,6 +63,150 @@ pub fn from_release(paths: &ElvmPaths, version: &Version, force: bool) -> anyhow
     )?;
     println!("installed elephc {version}");
     Ok(())
+}
+
+/// Downloads, verifies, and installs a nightly build.
+///
+/// Three things separate this from `from_release`:
+///
+///   * reinstalling is not an error. `nightly` is a channel, not a version,
+///     so `elvm install nightly` on an already-installed nightly is an
+///     update — the same shape as `rustup update nightly`.
+///   * what is installed is identified by the tarball's SHA-256, not by its
+///     version string. Two builds from the same UTC day differ only in the
+///     `+g<sha>` build metadata, which semver comparisons ignore; the digest
+///     is fetched anyway to verify the download, so it costs nothing.
+///   * what was installed is always printed. The workflow skips nights when
+///     `main` is red or unchanged, so the newest nightly can be days old and
+///     a silent "installed" would hide that.
+pub fn nightly(paths: &ElvmPaths, channel: &Channel, force: bool) -> anyhow::Result<()> {
+    let host = target::host()?;
+
+    paths.ensure_dirs()?;
+    let _lock = InstallLock::acquire(paths)?;
+
+    let release = github::fetch_nightly(channel.tag())?
+        .ok_or_else(|| unpublished_nightly_error(paths, channel))?;
+
+    let tarball_name = github::nightly_tarball_name(&host);
+    let checksum_name = github::nightly_checksum_name(&host);
+    let tarball_asset = release
+        .asset(&tarball_name)
+        .ok_or_else(|| no_nightly_binary_error(&release, &host))?;
+    let checksum_asset = release
+        .asset(&checksum_name)
+        .ok_or_else(|| anyhow::anyhow!("nightly {} has no asset {checksum_name}", release.tag))?;
+
+    let expected = download::parse_checksum_file(&download::fetch_text(&checksum_asset.url)?)?;
+    let stamp = Stamp {
+        tag: release.tag.clone(),
+        version: release.version.clone(),
+        commit: release.commit.clone(),
+        published_at: release.published_at.clone(),
+        sha256: expected.clone(),
+    };
+
+    let destination = paths.version_dir(channel.dir_name());
+    if !force && installed::is_complete(&destination) {
+        if let Some(current) = Stamp::read(&destination) {
+            if current.sha256.eq_ignore_ascii_case(&expected) {
+                if channel.is_rolling() {
+                    println!("elephc nightly is already up to date: {}", stamp.summary());
+                } else {
+                    println!("elephc {channel} is already installed: {}", stamp.summary());
+                    println!("  reinstall it with: elvm install {channel} --force");
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // Named by version rather than by the upstream filename, which carries no
+    // version at all: every nightly ships as `elephc-nightly-<triple>.tar.gz`,
+    // so caching under that name would have each build overwrite the last.
+    // Keyed this way, `cache/downloads/` keeps nightlies that upstream has
+    // already pruned — the only copy of a build older than the retention
+    // window that elvm can reinstall from.
+    let cached = paths
+        .downloads()
+        .join(format!("elephc-{}-{host}.tar.gz", release.version));
+
+    println!("downloading elephc {} ({})", release.version, release.tag);
+    download::fetch_verified(&tarball_asset.url, &expected, &cached)?;
+
+    let staging = tempfile::Builder::new()
+        .prefix("install")
+        .tempdir_in(paths.tmp())?;
+    archive::extract_tar_gz(&cached, staging.path())?;
+    // Written before the swap, so the stamp lands atomically with the files
+    // it describes: a directory can never claim to hold a build it does not.
+    stamp.write(staging.path())?;
+
+    install_staged(
+        &destination,
+        staging,
+        "the downloaded nightly archive is missing the elephc binary or its bridge archives",
+    )?;
+
+    println!("installed elephc {} as {channel}", stamp.summary());
+    if channel.is_rolling() {
+        println!("  this is a moving target; pin a dated build with: elvm ls-remote");
+    }
+    Ok(())
+}
+
+/// Builds the error for a nightly tag that is not published.
+///
+/// For the rolling channel that means the workflow has not published one yet.
+/// For a dated tag it usually means the retention window has passed it by, so
+/// the message names the oldest one still available — the listing costs a
+/// request, which is why it happens only on this path.
+fn unpublished_nightly_error(paths: &ElvmPaths, channel: &Channel) -> anyhow::Error {
+    if channel.is_rolling() {
+        return anyhow::anyhow!(
+            "the nightly channel has no published build\n  \
+             nightlies are built from `main` and skipped when it is red or unchanged\n  \
+             see what is published: elvm ls-remote"
+        );
+    }
+
+    let available = github::list_nightlies(paths, true).unwrap_or_default();
+    match (available.first(), available.last()) {
+        (Some(newest), Some(oldest)) => anyhow::anyhow!(
+            "elephc {channel} is not published\n  \
+             dated nightlies are kept for a limited window and then deleted upstream\n  \
+             the oldest still published is {}, the newest is {}\n  \
+             see them all: elvm ls-remote",
+            oldest.tag,
+            newest.tag
+        ),
+        _ => anyhow::anyhow!(
+            "elephc {channel} is not published, and no dated nightly is\n  \
+             install the rolling channel instead: elvm install nightly"
+        ),
+    }
+}
+
+/// Builds the error for a nightly with no binary for `host`.
+///
+/// Unlike a release, a nightly cannot be answered with "install an older one
+/// that has a binary": every nightly publishes the same three targets, so if
+/// this one has no binary for the host, none of them will. The actionable
+/// fix is a build from source at that exact commit.
+fn no_nightly_binary_error(release: &github::NightlyRelease, host: &str) -> anyhow::Error {
+    let targets = release.targets();
+    let published = if targets.is_empty() {
+        "none".to_string()
+    } else {
+        targets.join(", ")
+    };
+    anyhow::anyhow!(
+        "no nightly binary for {host}\n  \
+         nightly {} publishes: {published}\n  \
+         build that commit instead: elvm install --build {}",
+        release.tag,
+        release.commit
+    )
 }
 
 /// Builds the error for a requested version with no binary for `host`.

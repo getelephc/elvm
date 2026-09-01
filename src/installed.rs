@@ -65,6 +65,15 @@ impl Installed {
             return Some(version.to_string());
         }
         match request {
+            // A nightly lives under its own tag name, which is never valid
+            // semver, so `scan` files it among the aliases.
+            VersionRequest::Nightly(channel) => {
+                let name = channel.dir_name();
+                self.aliases
+                    .iter()
+                    .any(|alias| alias == name)
+                    .then(|| name.to_string())
+            }
             VersionRequest::Alias(name) if self.aliases.contains(name) => Some(name.clone()),
             _ => None,
         }
@@ -105,6 +114,26 @@ mod tests {
         let installed = Installed::scan(&paths).unwrap();
         assert_eq!(installed.aliases, vec!["dev".to_string()]);
         assert_eq!(installed.versions, vec![Version::parse("0.26.4").unwrap()]);
+    }
+
+    #[test]
+    fn a_nightly_resolves_to_its_tag_directory_and_nothing_else() {
+        let (_tmp, paths) = fixture(&["0.26.4", "nightly", "nightly-20260901"]);
+        let installed = Installed::scan(&paths).unwrap();
+
+        let name = |s: &str| installed.resolve_name(&VersionRequest::parse(s));
+        assert_eq!(name("nightly"), Some("nightly".to_string()));
+        assert_eq!(
+            name("nightly-20260901"),
+            Some("nightly-20260901".to_string())
+        );
+        assert_eq!(name("nightly-20260831"), None);
+
+        // The property that keeps nightlies out of release resolution: they
+        // are directories under `versions/`, but not versions.
+        assert_eq!(installed.versions, vec![Version::parse("0.26.4").unwrap()]);
+        assert_eq!(name("latest"), Some("0.26.4".to_string()));
+        assert_eq!(name("0.26"), Some("0.26.4".to_string()));
     }
 
     #[test]

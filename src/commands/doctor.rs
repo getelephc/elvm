@@ -1,7 +1,13 @@
 use crate::installed::{self, Installed, BRIDGE_ARCHIVES};
+use crate::nightly::{self, Channel, Stamp};
 use crate::paths::ElvmPaths;
 use crate::target;
 use std::path::PathBuf;
+
+/// How many nightlies elephc keeps published. Used only to tell someone
+/// their installed nightly has aged out of that window, so being wrong here
+/// costs a slightly early or late note, never a wrong action.
+const RETENTION_DAYS: i64 = 14;
 
 /// Reports environment problems, each with the command that fixes it.
 pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
@@ -105,16 +111,31 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
                 "✗ {name} is missing bridge archive(s): {}",
                 missing.join(", ")
             );
-            // `elvm install <name> --force` only makes sense for a semver
-            // version; an alias created by `elvm link` has no published
-            // release to reinstall from, so `elvm install dev --force`
-            // fails with "no published elephc release matches dev".
-            if semver::Version::parse(&name).is_ok() {
+            // `elvm install <name> --force` only makes sense for a name
+            // elvm can fetch: a semver version, or a nightly tag. An alias
+            // created by `elvm link` has no published artifact to reinstall
+            // from, so `elvm install dev --force` fails with "no published
+            // elephc release matches dev".
+            if semver::Version::parse(&name).is_ok() || Channel::parse(&name).is_some() {
                 println!("  reinstall with: elvm install {name} --force");
             } else {
                 println!(
                     "  re-link it: elvm link <path> --as {name}  (or remove it: elvm uninstall {name})"
                 );
+            }
+        }
+        if let Some(stamp) = Stamp::read(&dir) {
+            println!("  {}", stamp.summary());
+            // Not a problem, so it does not fail `doctor`: an aged-out
+            // nightly still works, it just can no longer be downloaded, so
+            // a colleague given this version string cannot install it.
+            if let Some(age) = stamp.age_in_days(nightly::now_unix()) {
+                if age > RETENTION_DAYS {
+                    println!(
+                        "  · {age} days old; upstream keeps {RETENTION_DAYS} nightlies, so this build is no longer published"
+                    );
+                    println!("    update it with: elvm install nightly");
+                }
             }
         }
         if let Some(reason) = quarantined(&dir.join("elephc")) {

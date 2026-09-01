@@ -14,7 +14,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Install a version. With no argument, read .elephc-version.
+    /// Install a version, or `nightly`. With no argument, read .elephc-version.
     Install {
         #[arg(conflicts_with = "build")]
         version: Option<String>,

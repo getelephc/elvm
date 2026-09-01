@@ -8,6 +8,7 @@ mod github;
 mod install;
 mod installed;
 mod lock;
+mod nightly;
 mod paths;
 mod resolve;
 mod shim;

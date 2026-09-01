@@ -1,3 +1,4 @@
+use crate::nightly::Channel;
 use semver::Version;
 
 /// A version as requested by a user, a `.elephc-version` file, or the global file.
@@ -10,6 +11,11 @@ pub enum VersionRequest {
     /// Highest installed version. In `install`, the caller treats this as
     /// "newest published" instead — see the spec's asymmetry rule.
     Latest,
+    /// A nightly: the rolling `nightly` channel, or a dated build like
+    /// `nightly-20260901`. Kept apart from `Exact` because a nightly's
+    /// version string, though valid semver, sorts *below* the release it
+    /// derives from — see `crate::nightly`.
+    Nightly(Channel),
     /// A directory name in `versions/`, such as `dev` from `elvm link`.
     Alias(String),
 }
@@ -21,6 +27,11 @@ impl VersionRequest {
 
         if body.eq_ignore_ascii_case("latest") {
             return Self::Latest;
+        }
+        // Checked against `trimmed`, not `body`: a nightly tag never carries
+        // the `v` prefix that stripping produces.
+        if let Some(channel) = Channel::parse(trimmed) {
+            return Self::Nightly(channel);
         }
         if let Ok(version) = Version::parse(body) {
             return Self::Exact(version);
@@ -37,8 +48,9 @@ impl VersionRequest {
 
     /// Picks the best installed version for this request.
     ///
-    /// Returns `None` for `Alias`: aliases are directory names, resolved by
-    /// `installed::resolve_name` rather than by semver comparison.
+    /// Returns `None` for `Alias` and `Nightly`: both are directory names,
+    /// resolved by `installed::resolve_name` rather than by semver
+    /// comparison.
     pub fn select(&self, available: &[Version]) -> Option<Version> {
         match self {
             Self::Exact(wanted) => available.iter().find(|v| *v == wanted).cloned(),
@@ -51,7 +63,7 @@ impl VersionRequest {
                 .max()
                 .cloned(),
             Self::Latest => available.iter().max().cloned(),
-            Self::Alias(_) => None,
+            Self::Nightly(_) | Self::Alias(_) => None,
         }
     }
 }
@@ -62,6 +74,7 @@ impl std::fmt::Display for VersionRequest {
             Self::Exact(v) => write!(f, "{v}"),
             Self::Prefix(p) => write!(f, "{p}"),
             Self::Latest => write!(f, "latest"),
+            Self::Nightly(channel) => write!(f, "{channel}"),
             Self::Alias(a) => write!(f, "{a}"),
         }
     }
@@ -105,6 +118,38 @@ mod tests {
         assert_eq!(
             VersionRequest::parse("dev"),
             VersionRequest::Alias("dev".into())
+        );
+    }
+
+    #[test]
+    fn parses_nightly_tags_as_a_channel_not_an_alias() {
+        use crate::nightly::Channel;
+        assert_eq!(
+            VersionRequest::parse("nightly"),
+            VersionRequest::Nightly(Channel::Rolling)
+        );
+        assert_eq!(
+            VersionRequest::parse(" nightly-20260901\n"),
+            VersionRequest::Nightly(Channel::Dated("nightly-20260901".into()))
+        );
+        // Not the published grammar: it stays an alias, so it fails as a
+        // missing directory rather than being sent to the nightly endpoint.
+        assert_eq!(
+            VersionRequest::parse("nightly-2026-09-01"),
+            VersionRequest::Alias("nightly-2026-09-01".into())
+        );
+    }
+
+    #[test]
+    fn a_nightly_never_selects_a_semver_version() {
+        // The safety property: even though `0.26.5-nightly.20260901` is
+        // valid semver, no nightly request can resolve to an installed
+        // release, and no release request can resolve to a nightly.
+        let available = [v("0.26.4"), v("0.26.5")];
+        assert_eq!(VersionRequest::parse("nightly").select(&available), None);
+        assert_eq!(
+            VersionRequest::parse("nightly-20260901").select(&available),
+            None
         );
     }
 

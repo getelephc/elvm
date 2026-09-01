@@ -136,6 +136,67 @@ fn platform_note(all_missing: bool, downloadable: bool) -> &'static str {
     }
 }
 
+/// Dated nightlies shown in the grouped view. `--all` lists every one, the
+/// same way it expands every patch.
+const MAX_NIGHTLIES: usize = 5;
+
+/// Prints the nightly channel, newest first.
+///
+/// Printed *before* the releases, never after, for the same reason as
+/// `NO_BINARY_FOR_PLATFORM`: the last line of `ls-remote` is the newest
+/// published release, which is what a reader is usually looking for, and an
+/// unsupported channel must not take that place.
+///
+/// Reads the payload `run` has just refreshed, so this costs no extra
+/// request. The order comes from `list_nightlies`, which sorts by
+/// publication time — by tag name `nightly-20260901.10` would sort before
+/// `nightly-20260901.2` and the wrong build would be named newest.
+fn print_nightlies(
+    paths: &ElvmPaths,
+    installed: &Installed,
+    host: &str,
+    all: bool,
+) -> anyhow::Result<()> {
+    let nightlies = github::list_nightlies(paths, false)?;
+
+    println!("nightly — unsupported builds of main; elvm install nightly takes the newest");
+    if nightlies.is_empty() {
+        // Only the *dated* tags are listed here, so an empty list does not
+        // mean the channel is empty: the rolling tag may well have a build,
+        // and `elvm install nightly` would install it. Saying "none
+        // published" would talk someone out of a command that works.
+        println!("  no dated build to pin right now");
+        return Ok(());
+    }
+
+    let shown = if all {
+        nightlies.len()
+    } else {
+        nightlies.len().min(MAX_NIGHTLIES)
+    };
+    for nightly in &nightlies[..shown] {
+        let marker = if installed.aliases.contains(&nightly.tag) {
+            "*"
+        } else {
+            " "
+        };
+        let note = if nightly.asset(&github::nightly_tarball_name(host)).is_some() {
+            ""
+        } else {
+            "  (no binary for this platform)"
+        };
+        println!("{marker} {}  {}{note}", nightly.tag, nightly.version);
+    }
+    if shown < nightlies.len() {
+        println!(
+            "  +{} older — elvm ls-remote --all",
+            nightlies.len() - shown
+        );
+    }
+    println!("  a dated tag pins one build, for as long as upstream keeps it");
+    Ok(())
+}
+
 pub fn run(paths: &ElvmPaths, all: bool) -> anyhow::Result<()> {
     let host = target::host()?;
     let releases = github::list_releases(paths, true)?;
@@ -166,7 +227,10 @@ pub fn run(paths: &ElvmPaths, all: bool) -> anyhow::Result<()> {
         // as the last line instead of the newest version.
         if all_missing {
             println!("{NO_BINARY_FOR_PLATFORM}");
+            println!();
         }
+        print_nightlies(paths, &installed, &host, true)?;
+        println!();
         for version in &published {
             let marker = if installed.versions.contains(version) {
                 "*"
@@ -192,6 +256,8 @@ pub fn run(paths: &ElvmPaths, all: bool) -> anyhow::Result<()> {
     if all_missing {
         println!("{NO_BINARY_FOR_PLATFORM}");
     }
+    println!();
+    print_nightlies(paths, &installed, &host, false)?;
     println!();
 
     let last_idx = grouped.rows.len().saturating_sub(1);
