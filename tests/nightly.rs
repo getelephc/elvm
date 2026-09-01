@@ -514,17 +514,36 @@ fn ls_remote_lists_dated_nightlies_without_displacing_the_newest_release() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
 
+    assert!(stdout.contains("NIGHTLY"), "{stdout}");
     assert!(stdout.contains("nightly-20260901"), "{stdout}");
     assert!(stdout.contains("nightly-20260902"), "{stdout}");
+
     // The rolling tag duplicates the newest dated build's artifacts; listing
-    // it too would show the same build twice.
+    // it too would show the same build twice. Checked on the row's first
+    // cell, since the caption legitimately contains the word.
     assert!(
-        !stdout.lines().any(|line| line.starts_with("  nightly  ")),
+        !stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("nightly")),
         "{stdout}"
     );
-    // The nightly block sits above the releases: the last line of ls-remote
-    // stays the newest published release.
-    assert!(stdout.trim_end().ends_with("0.26.5  ← latest"), "{stdout}");
+
+    // Newest first, by publication time: by tag name `.10` would sort before
+    // `.2` and the wrong build would head the table.
+    let pos = |needle: &str| stdout.find(needle).unwrap();
+    assert!(
+        pos("nightly-20260902") < pos("nightly-20260901"),
+        "{stdout}"
+    );
+
+    // The nightly table comes first, the releases after it, and the newest
+    // release is the last row of its own table.
+    assert!(pos("NIGHTLY") < pos("VERSION"), "{stdout}");
+    let last = stdout.trim_end().lines().next_back().unwrap();
+    assert!(
+        last.starts_with("0.26.5") && last.contains("latest"),
+        "{last}"
+    );
 }
 
 #[test]

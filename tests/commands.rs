@@ -86,12 +86,58 @@ fn ls_marks_the_active_version() {
     sandbox.fake_elephc("0.25.2");
     sandbox.set_global_version("0.25.2\n");
 
-    elvm(&sandbox, &sandbox.home())
-        .arg("ls")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("* 0.25.2"))
-        .stdout(predicates::str::contains("  0.26.4"));
+    let assert = elvm(&sandbox, &sandbox.home()).arg("ls").assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    // The active version is named in the NOTE column rather than by a
+    // leading marker, so this reads the row instead of a prefix.
+    let line = |name: &str| stdout.lines().find(|l| l.contains(name)).unwrap();
+    assert!(line("0.25.2").contains("active"), "{stdout}");
+    assert!(!line("0.26.4").contains("active"), "{stdout}");
+}
+
+/// `ls` columns: the name a reader scans, then a nightly's build (released
+/// versions have none, so the column is dropped when no nightly is on
+/// screen), then a note. Pins that a version missing a bridge archive is
+/// called out here and not only by `doctor`, and that the columns line up
+/// even when the names differ in length by a lot.
+#[test]
+fn ls_lines_up_names_and_flags_an_incomplete_version() {
+    let sandbox = Sandbox::new();
+    sandbox.fake_elephc("0.26.4");
+    sandbox.fake_elephc("nightly-20260901");
+    std::fs::remove_file(
+        sandbox
+            .elvm_dir()
+            .join("versions/nightly-20260901/libelephc_tls.a"),
+    )
+    .unwrap();
+
+    let assert = elvm(&sandbox, &sandbox.home()).arg("ls").assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    let line = |name: &str| {
+        stdout
+            .lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("no line for {name} in:\n{stdout}"))
+    };
+    assert!(line("nightly-20260901").ends_with("incomplete"), "{stdout}");
+    assert!(!line("0.26.4").contains("incomplete"), "{stdout}");
+    assert!(stdout.starts_with("VERSION"), "{stdout}");
+
+    // Every row starts its name in the same column, under the heading —
+    // without padding, "0.26.4" and "nightly-20260901" would leave the
+    // columns after them ragged.
+    let column = |name: &str| line(name).find(name).unwrap();
+    assert_eq!(column("0.26.4"), 0, "{stdout}");
+    assert_eq!(column("nightly-20260901"), 0, "{stdout}");
+
+    // No row may end in trailing whitespace, which an empty column would
+    // leave behind.
+    for l in stdout.lines() {
+        assert_eq!(l, l.trim_end(), "trailing space in {l:?}");
+    }
 }
 
 #[test]

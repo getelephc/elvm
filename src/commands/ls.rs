@@ -1,6 +1,12 @@
 use crate::installed::{self, Installed};
 use crate::nightly::Stamp;
 use crate::paths::ElvmPaths;
+use crate::table;
+
+/// Column headings for the installed listing. `BUILD` and `PUBLISHED` are
+/// filled only by nightlies — a released version is fully identified by its
+/// name — so both columns disappear when no nightly is installed.
+const HEADERS: [&str; 4] = ["VERSION", "BUILD", "PUBLISHED", "NOTE"];
 
 pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
     let installed = Installed::scan(paths)?;
@@ -15,26 +21,37 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
     let mut names: Vec<String> = installed.versions.iter().map(|v| v.to_string()).collect();
     names.extend(installed.aliases.iter().cloned());
 
-    for name in names {
-        let marker = if Some(&name) == active.as_ref() {
-            "*"
-        } else {
-            " "
-        };
-        let dir = paths.version_dir(&name);
-        let note = if installed::is_complete(&dir) {
-            String::new()
-        } else {
-            "  (incomplete)".to_string()
-        };
-        // A nightly directory's name says nothing about which build is in it
-        // — `nightly` is the same name every night — so the stamp written at
-        // install time is what makes the listing mean anything.
-        let build = match Stamp::read(&dir) {
-            Some(stamp) => format!("  {}", stamp.summary()),
-            None => String::new(),
-        };
-        println!("{marker} {name}{build}{note}");
-    }
+    let rows: Vec<Vec<String>> = names
+        .into_iter()
+        .map(|name| {
+            let dir = paths.version_dir(&name);
+            // A nightly directory's name says nothing about which build is
+            // in it — `nightly` is the same name every night — so the stamp
+            // written at install time is what makes the listing mean
+            // anything.
+            let stamp = Stamp::read(&dir);
+            let mut notes = Vec::new();
+            if Some(&name) == active.as_ref() {
+                notes.push("active");
+            }
+            if !installed::is_complete(&dir) {
+                notes.push("incomplete");
+            }
+            vec![
+                name,
+                stamp
+                    .as_ref()
+                    .map(|s| s.version.clone())
+                    .unwrap_or_default(),
+                stamp
+                    .as_ref()
+                    .map(|s| s.published_date().to_string())
+                    .unwrap_or_default(),
+                notes.join(", "),
+            ]
+        })
+        .collect();
+
+    table::print(&HEADERS, &rows);
     Ok(())
 }
