@@ -12,6 +12,7 @@ mod nightly;
 mod paths;
 mod resolve;
 mod shim;
+mod table;
 mod target;
 mod version;
 

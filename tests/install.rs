@@ -414,12 +414,17 @@ fn ls_remote_lists_published_versions_and_marks_installed_ones() {
     // Install only one of the two published versions
     sandbox.fake_elephc("0.26.4");
 
-    elvm(&sandbox, &upstream)
+    let assert = elvm(&sandbox, &upstream)
         .arg("ls-remote")
         .assert()
-        .success()
-        .stdout(predicates::str::contains("* 0.26.4"))
-        .stdout(predicates::str::contains("  0.25.2"));
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    // Installed versions are named in the NOTE column now, not by a leading
+    // marker — read on the row, so column padding cannot break the test.
+    let row = |name: &str| stdout.lines().find(|l| l.starts_with(name)).unwrap();
+    assert!(row("0.26.4").contains("installed"), "{stdout}");
+    assert!(!row("0.25.2").contains("installed"), "{stdout}");
 }
 
 #[test]
@@ -427,14 +432,19 @@ fn ls_remote_marks_releases_with_no_binary_for_this_platform() {
     let sandbox = Sandbox::new();
     let upstream = Upstream::start_with_missing_platform("0.26.4", "0.25.2");
 
-    elvm(&sandbox, &upstream)
+    let assert = elvm(&sandbox, &upstream)
         .arg("ls-remote")
         .assert()
-        .success()
-        .stdout(predicates::str::contains("  0.26.4"))
-        .stdout(predicates::str::contains(
-            "  0.25.2  (no binary for this platform)",
-        ));
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    // One `BINARY` column answers per release, replacing the same sentence
+    // repeated on every line that lacked a binary.
+    let row = |name: &str| stdout.lines().find(|l| l.starts_with(name)).unwrap();
+    assert!(stdout.contains("VERSION"), "{stdout}");
+    assert!(stdout.contains("BINARY"), "{stdout}");
+    assert!(row("0.26.4").contains("yes"), "{stdout}");
+    assert!(row("0.25.2").contains("no"), "{stdout}");
 }
 
 /// The default (grouped) shape: a summary header naming both counts, the
@@ -456,52 +466,58 @@ fn ls_remote_default_output_groups_older_series_and_expands_the_newest() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
 
-    // Header names both counts and the flag to see everything; with only 3
-    // series and none hidden, there's no "N older series hidden" line.
+    let row = |name: &str| {
+        stdout
+            .lines()
+            .find(|l| l.starts_with(name))
+            .unwrap_or_else(|| panic!("no row for {name} in:\n{stdout}"))
+    };
+
+    // Caption names both counts and the flag to see everything; with only 3
+    // series and none hidden, there's no "N older hidden" clause.
     assert!(
         stdout.contains("6 releases in 3 series — elvm ls-remote --all for every patch"),
         "{stdout}"
     );
     assert!(!stdout.contains("hidden"), "{stdout}");
 
-    // A series with only one patch collapses with no (+N) suffix at all.
-    assert!(stdout.contains("0.24.0"), "{stdout}");
-    assert!(!stdout.contains("0.24.0  (+"), "{stdout}");
+    // A series with only one patch collapses with nothing in OLDER.
+    assert!(
+        row("0.24.0").split_whitespace().nth(1) != Some("+0"),
+        "{stdout}"
+    );
 
     // Older series collapse to their highest patch with a count of the rest;
     // the patches beneath it must not get their own line.
-    assert!(stdout.contains("0.25.2  (+2)"), "{stdout}");
+    assert!(row("0.25.2").contains("+2"), "{stdout}");
     assert!(!stdout.contains("0.25.0"), "{stdout}");
     assert!(!stdout.contains("0.25.1"), "{stdout}");
 
-    // Newest series (0.26) is expanded patch by patch, with no (+N) suffix,
-    // and only its last (highest) line carries the "latest" marker.
-    assert!(stdout.contains("0.26.0"), "{stdout}");
-    assert!(!stdout.contains("0.26.0  (+"), "{stdout}");
-    assert!(stdout.contains("0.26.1  ← latest"), "{stdout}");
+    // Newest series (0.26) is listed patch by patch, so nothing in OLDER,
+    // and only its highest row is marked latest.
+    assert!(!row("0.26.0").contains('+'), "{stdout}");
+    let marked: Vec<&str> = stdout.lines().filter(|l| l.contains("latest")).collect();
+    assert_eq!(marked.len(), 1, "{stdout}");
+    assert!(marked[0].starts_with("0.26.1"), "{stdout}");
 
-    // Oldest-first, newest-last: the collapsed block precedes the expanded
-    // one, and within it "0.26.1  ← latest" is the very last line printed.
+    // Oldest first, newest last: collapsed series precede the expanded one,
+    // and the latest row is the table's last.
     let pos = |needle: &str| stdout.find(needle).unwrap();
     assert!(pos("0.24.0") < pos("0.25.2"));
     assert!(pos("0.25.2") < pos("0.26.0"));
-    assert!(pos("0.26.0") < pos("0.26.1  ← latest"));
-    assert!(stdout.trim_end().ends_with("0.26.1  ← latest"));
+    assert!(pos("0.26.0") < pos("0.26.1"));
+    assert!(stdout.trim_end().ends_with("latest"));
 }
 
-/// Review finding on `main` (post `5f2d9c7`): when the published list spans
-/// exactly one `(major, minor)` series, there is no collapsed block, so row
-/// 0 of `group()`'s output is itself `expanded`. The header block always
-/// prints one blank line as a separator, and the row loop separately prints
-/// one the first time it sees an `expanded` row — with no collapsed block
-/// to separate from, that's the same seam twice, producing two blank lines
-/// back to back instead of one. Pins the fix by asserting the exact
-/// expected bytes, not just "some blank line exists somewhere".
+/// Review finding on `main` (post `5f2d9c7`): with the published list in
+/// one `(major, minor)` series there is no collapsed block, and the seam
+/// between the header and the rows used to print twice, giving two blank
+/// lines back to back. The listing is a table now, with no blank line inside
+/// it at all — so what this pins today is the whole shape: the nightly
+/// section, one blank line, the caption, the heading, the rows.
 ///
-/// The nightly block now sits at that same seam, between the header and the
-/// rows — where it has to be, because the last line of `ls-remote` is the
-/// newest release and an unsupported channel must not displace it. So this
-/// pins both separators at once.
+/// Asserted as exact bytes rather than "a blank line exists somewhere",
+/// because every regression here has been a line appearing once too often.
 #[test]
 fn ls_remote_prints_exactly_one_blank_line_when_everything_is_one_series() {
     let sandbox = Sandbox::new();
@@ -514,14 +530,13 @@ fn ls_remote_prints_exactly_one_blank_line_when_everything_is_one_series() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
 
     let expected = concat!(
+        "no dated nightly to pin; elvm install nightly takes the newest build of main\n",
+        "\n",
         "3 releases in 1 series — elvm ls-remote --all for every patch\n",
-        "\n",
-        "nightly — unsupported builds of main; elvm install nightly takes the newest\n",
-        "  no dated build to pin right now\n",
-        "\n",
-        "  0.26.0\n",
-        "  0.26.1\n",
-        "  0.26.2  ← latest\n",
+        "VERSION  BINARY  NOTE\n",
+        "0.26.0   yes\n",
+        "0.26.1   yes\n",
+        "0.26.2   yes     latest\n",
     );
     assert_eq!(stdout, expected, "{stdout:?}");
 }
@@ -543,9 +558,13 @@ fn ls_remote_all_lists_every_published_patch_with_no_grouping() {
     for version in ["0.24.0", "0.25.0", "0.25.1", "0.26.0"] {
         assert!(stdout.contains(version), "missing {version} in:\n{stdout}");
     }
-    assert!(!stdout.contains("(+"), "{stdout}");
-    assert!(!stdout.contains("← latest"), "{stdout}");
-    assert!(!stdout.contains("releases in"), "{stdout}");
+    // No grouping, so no row fills OLDER and the column is dropped whole.
+    assert!(!stdout.contains("OLDER"), "{stdout}");
+    assert!(
+        stdout.contains("4 releases, every published patch"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("series"), "{stdout}");
     assert!(!stdout.contains("hidden"), "{stdout}");
 
     // Oldest first, newest last.
@@ -553,7 +572,7 @@ fn ls_remote_all_lists_every_published_patch_with_no_grouping() {
     assert!(pos("0.24.0") < pos("0.25.0"));
     assert!(pos("0.25.0") < pos("0.25.1"));
     assert!(pos("0.25.1") < pos("0.26.0"));
-    assert!(stdout.trim_end().ends_with("0.26.0"));
+    assert!(stdout.trim_end().ends_with("latest"));
 }
 
 /// Guards the pagination bug directly: GitHub returns releases 100 to a

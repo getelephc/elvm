@@ -1,14 +1,15 @@
 use crate::github;
 use crate::installed::Installed;
 use crate::paths::ElvmPaths;
+use crate::table;
 use crate::target;
 use semver::Version;
 
-/// Shown when no release for the current platform has a downloadable
-/// binary at all; both the flat (`--all`) and grouped views print this
-/// once instead of repeating a per-line note that would carry no
-/// information (every line would say the same thing).
-const NO_BINARY_FOR_PLATFORM: &str = "no elephc release publishes a binary for this platform — build it instead: elvm install --build <ref>";
+/// Shown when no release listed has a downloadable binary for this
+/// platform. The `BINARY` column already says so per release; this adds the
+/// one thing the column cannot, which is what to do about it.
+const NO_BINARY_FOR_PLATFORM: &str =
+    "none publishes a binary for this platform — build one instead: elvm install --build <ref>";
 
 /// Maximum number of (major, minor) series the grouped view displays: the
 /// newest series (expanded patch by patch) plus this many of the next most
@@ -21,6 +22,14 @@ pub struct Row {
     /// Patches older than this one within the same series; 0 when expanded.
     pub older_in_series: usize,
     /// True for the newest series, which is listed patch by patch.
+    ///
+    /// The table no longer renders collapsed and expanded rows differently
+    /// — `OLDER` says how many patches a row stands for, which is the only
+    /// distinction a reader needs — so nothing outside the tests reads this.
+    /// It stays because it is what `group` decides, and the only thing that
+    /// can tell a collapsed single-patch series from an individually listed
+    /// release: `older_in_series` is 0 for both.
+    #[allow(dead_code)]
     pub expanded: bool,
 }
 
@@ -124,28 +133,25 @@ fn has_binary(releases: &[github::Release], version: &Version, host: &str) -> bo
         .unwrap_or(false)
 }
 
-/// The per-line note for a release missing a binary, suppressed when *no*
-/// release has one — that case gets a single note elsewhere instead (see
-/// `run`), since repeating the same note on every line carries no
-/// information.
-fn platform_note(all_missing: bool, downloadable: bool) -> &'static str {
-    if !all_missing && !downloadable {
-        "  (no binary for this platform)"
-    } else {
-        ""
-    }
-}
-
 /// Dated nightlies shown in the grouped view. `--all` lists every one, the
 /// same way it expands every patch.
 const MAX_NIGHTLIES: usize = 5;
 
-/// Prints the nightly channel, newest first.
+/// Column headings for the release table. `OLDER` counts the patches a
+/// collapsed row stands for; `BINARY` says whether this platform can
+/// download that release at all — a fact that used to be repeated as a
+/// sentence on every line that lacked one.
+const RELEASE_HEADERS: [&str; 4] = ["VERSION", "OLDER", "BINARY", "NOTE"];
+
+/// Column headings for the nightly table.
+const NIGHTLY_HEADERS: [&str; 4] = ["NIGHTLY", "BUILD", "PUBLISHED", "NOTE"];
+
+/// Prints the dated nightlies, newest first, above the releases.
 ///
-/// Printed *before* the releases, never after, for the same reason as
-/// `NO_BINARY_FOR_PLATFORM`: the last line of `ls-remote` is the newest
-/// published release, which is what a reader is usually looking for, and an
-/// unsupported channel must not take that place.
+/// Ordering is no longer load-bearing: the newest release used to have to be
+/// the last line on screen because nothing else identified it, and now its
+/// row says `latest` outright. So this sits where it reads best rather than
+/// where it has to.
 ///
 /// Reads the payload `run` has just refreshed, so this costs no extra
 /// request. The order comes from `list_nightlies`, which sorts by
@@ -159,13 +165,12 @@ fn print_nightlies(
 ) -> anyhow::Result<()> {
     let nightlies = github::list_nightlies(paths, false)?;
 
-    println!("nightly — unsupported builds of main; elvm install nightly takes the newest");
     if nightlies.is_empty() {
         // Only the *dated* tags are listed here, so an empty list does not
         // mean the channel is empty: the rolling tag may well have a build,
         // and `elvm install nightly` would install it. Saying "none
         // published" would talk someone out of a command that works.
-        println!("  no dated build to pin right now");
+        println!("no dated nightly to pin; elvm install nightly takes the newest build of main");
         return Ok(());
     }
 
@@ -174,26 +179,42 @@ fn print_nightlies(
     } else {
         nightlies.len().min(MAX_NIGHTLIES)
     };
-    for nightly in &nightlies[..shown] {
-        let marker = if installed.aliases.contains(&nightly.tag) {
-            "*"
-        } else {
-            " "
-        };
-        let note = if nightly.asset(&github::nightly_tarball_name(host)).is_some() {
-            ""
-        } else {
-            "  (no binary for this platform)"
-        };
-        println!("{marker} {}  {}{note}", nightly.tag, nightly.version);
-    }
-    if shown < nightlies.len() {
-        println!(
-            "  +{} older — elvm ls-remote --all",
-            nightlies.len() - shown
-        );
-    }
-    println!("  a dated tag pins one build, for as long as upstream keeps it");
+    let hidden = nightlies.len() - shown;
+    let more = if hidden > 0 {
+        format!(", {hidden} older hidden")
+    } else {
+        String::new()
+    };
+    let count = nightlies.len();
+    let plural = if count == 1 { "" } else { "s" };
+    println!(
+        "{count} unsupported nightly build{plural} of main{more} — elvm install nightly takes the newest"
+    );
+
+    let rows: Vec<Vec<String>> = nightlies[..shown]
+        .iter()
+        .map(|nightly| {
+            let mut notes = Vec::new();
+            if installed.aliases.contains(&nightly.tag) {
+                notes.push("installed");
+            }
+            if nightly.asset(&github::nightly_tarball_name(host)).is_none() {
+                notes.push("no binary for this platform");
+            }
+            vec![
+                nightly.tag.clone(),
+                nightly.version.clone(),
+                nightly
+                    .published_at
+                    .split('T')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+                notes.join(", "),
+            ]
+        })
+        .collect();
+    table::print(&NIGHTLY_HEADERS, &rows);
     Ok(())
 }
 
@@ -207,94 +228,90 @@ pub fn run(paths: &ElvmPaths, all: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let total = releases.len();
-    let downloadable_count = releases
-        .iter()
-        .filter(|r| r.asset(&github::tarball_name(&r.version, &host)).is_some())
-        .count();
-    let all_missing = downloadable_count == 0;
+    print_nightlies(paths, &installed, &host, all)?;
+    println!();
 
     let mut published: Vec<Version> = releases.iter().map(|r| r.version.clone()).collect();
-    // Ascending: oldest first, newest last — the last line on screen is
-    // always the newest release, which is what a reader of `ls-remote` is
-    // usually looking for.
+    // Ascending: oldest first, so the newest release is the table's last row.
     published.sort();
 
-    if all {
-        // A note naming "no binary anywhere" is global status, not
-        // per-release, so — same as the grouped view — it's printed once up
-        // front rather than after the list, which would otherwise leave it
-        // as the last line instead of the newest version.
-        if all_missing {
-            println!("{NO_BINARY_FOR_PLATFORM}");
-            println!();
-        }
-        print_nightlies(paths, &installed, &host, true)?;
-        println!();
-        for version in &published {
-            let marker = if installed.versions.contains(version) {
-                "*"
-            } else {
-                " "
-            };
-            let downloadable = has_binary(&releases, version, &host);
-            let note = platform_note(all_missing, downloadable);
-            println!("{marker} {version}{note}");
-        }
-        return Ok(());
-    }
-
-    let grouped = group(&published);
-
-    println!(
-        "{total} releases in {} series — elvm ls-remote --all for every patch",
-        grouped.total_series
-    );
-    if grouped.hidden_series > 0 {
-        println!("{} older series hidden", grouped.hidden_series);
-    }
-    if all_missing {
-        println!("{NO_BINARY_FOR_PLATFORM}");
-    }
-    println!();
-    print_nightlies(paths, &installed, &host, false)?;
-    println!();
-
-    let last_idx = grouped.rows.len().saturating_sub(1);
-    let mut printed_collapsed_row = false;
-    let mut printed_blank_before_expanded = false;
-    for (idx, row) in grouped.rows.iter().enumerate() {
-        // Only separate the collapsed block from the expanded one when a
-        // collapsed row actually printed before it — otherwise (every
-        // published version is in one series, so row 0 is already
-        // `expanded`) the header's own trailing blank line is already the
-        // only separator needed, and this would double it.
-        if row.expanded && !printed_blank_before_expanded && printed_collapsed_row {
-            println!();
-            printed_blank_before_expanded = true;
-        }
-        if !row.expanded {
-            printed_collapsed_row = true;
-        }
-        let marker = if installed.versions.contains(&row.version) {
-            "*"
+    // `BINARY` answers per release, from the release's own assets rather
+    // than a fixed platform list — which is the same question
+    // `install::no_binary_error` asks, and the reason neither consults a
+    // constant.
+    let binary_for = |version: &Version| {
+        if has_binary(&releases, version, &host) {
+            "yes"
         } else {
-            " "
-        };
-        let downloadable = has_binary(&releases, &row.version, &host);
-        let note = platform_note(all_missing, downloadable);
-        let count_suffix = if row.older_in_series > 0 {
-            format!("  (+{})", row.older_in_series)
+            "no"
+        }
+    };
+    let note_for = |version: &Version, latest: bool| {
+        let mut notes = Vec::new();
+        if latest {
+            notes.push("latest");
+        }
+        if installed.versions.contains(version) {
+            notes.push("installed");
+        }
+        notes.join(", ")
+    };
+
+    let rows: Vec<Vec<String>> = if all {
+        println!("{} releases, every published patch", releases.len());
+        let last_idx = published.len().saturating_sub(1);
+        published
+            .iter()
+            .enumerate()
+            .map(|(idx, version)| {
+                vec![
+                    version.to_string(),
+                    String::new(),
+                    binary_for(version).to_string(),
+                    note_for(version, idx == last_idx),
+                ]
+            })
+            .collect()
+    } else {
+        let grouped = group(&published);
+        let hidden = if grouped.hidden_series > 0 {
+            format!(", {} older hidden", grouped.hidden_series)
         } else {
             String::new()
         };
-        let latest_suffix = if idx == last_idx { "  ← latest" } else { "" };
         println!(
-            "{marker} {}{count_suffix}{note}{latest_suffix}",
-            row.version
+            "{} releases in {} series{hidden} — elvm ls-remote --all for every patch",
+            releases.len(),
+            grouped.total_series
         );
-    }
+        let last_idx = grouped.rows.len().saturating_sub(1);
+        grouped
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(idx, row)| {
+                let older = if row.older_in_series > 0 {
+                    format!("+{}", row.older_in_series)
+                } else {
+                    String::new()
+                };
+                vec![
+                    row.version.to_string(),
+                    older,
+                    binary_for(&row.version).to_string(),
+                    note_for(&row.version, idx == last_idx),
+                ]
+            })
+            .collect()
+    };
 
+    // A `BINARY` column reading `no` all the way down says what is missing
+    // but not what to do about it, and this is the one case where the answer
+    // is not "install a different version".
+    if rows.iter().all(|row| row[2] == "no") {
+        println!("{NO_BINARY_FOR_PLATFORM}");
+    }
+    table::print(&RELEASE_HEADERS, &rows);
     Ok(())
 }
 
