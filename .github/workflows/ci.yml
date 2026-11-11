@@ -12,7 +12,7 @@ jobs:
       # nothing about the platform that was still running.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -23,7 +23,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - name: End-to-end compile with a real elephc
-        if: matrix.os == 'macos-14'
+        if: runner.os == 'macOS'
         # This step calls the GitHub API through `elvm install latest`.
         # Unauthenticated it gets 60 requests/hour per IP, and runners share
         # egress addresses, so it fails intermittently with "rate limit
