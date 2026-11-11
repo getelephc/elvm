@@ -205,12 +205,6 @@ fn into_nightly(entry: RawRelease) -> NightlyRelease {
 const PER_PAGE: u32 = 100;
 const MAX_PAGES: u32 = 10;
 
-fn client() -> anyhow::Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .user_agent(concat!("elvm/", env!("CARGO_PKG_VERSION")))
-        .build()?)
-}
-
 /// Unauthenticated GitHub allows 60 requests per hour per IP, which CI runners
 /// on shared egress do exhaust. A 403 is reported with the reset time and the
 /// variable that raises the limit, rather than as a bare HTTP status.
@@ -258,7 +252,7 @@ fn fetch_releases_json(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Strin
         }
     }
 
-    let client = client()?;
+    let client = crate::http::client()?;
     let token = github_token();
 
     let mut entries: Vec<serde_json::Value> = Vec::new();
@@ -267,16 +261,17 @@ fn fetch_releases_json(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Strin
             "{}/repos/{REPO}/releases?per_page={PER_PAGE}&page={page}",
             api_base()
         );
-        let mut request = client.get(&url);
-        if let Some(token) = &token {
-            request = request.bearer_auth(token);
-        }
-
-        let response = request.send()?;
-        if let Some(err) = rate_limit_error(&response) {
-            return Err(err);
-        }
-        let body = response.error_for_status()?.text()?;
+        let body = crate::http::retry(|| {
+            let mut request = client.get(&url);
+            if let Some(token) = &token {
+                request = request.bearer_auth(token);
+            }
+            let response = crate::http::send(request)?;
+            if let Some(err) = rate_limit_error(&response) {
+                return Err(err);
+            }
+            crate::http::text(response.error_for_status()?)
+        })?;
         let page_entries: Vec<serde_json::Value> = serde_json::from_str(&body)?;
         let page_len = page_entries.len();
         entries.extend(page_entries);
@@ -316,19 +311,25 @@ pub fn list_nightlies(paths: &ElvmPaths, refresh: bool) -> anyhow::Result<Vec<Ni
 /// and dated tags are pruned once they leave the retention window.
 pub fn fetch_nightly(tag: &str) -> anyhow::Result<Option<NightlyRelease>> {
     let url = format!("{}/repos/{REPO}/releases/tags/{tag}", api_base());
-    let mut request = client()?.get(&url);
-    if let Some(token) = github_token() {
-        request = request.bearer_auth(token);
-    }
-
-    let response = request.send()?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    let client = crate::http::client()?;
+    let token = github_token();
+    let body = crate::http::retry(|| {
+        let mut request = client.get(&url);
+        if let Some(token) = &token {
+            request = request.bearer_auth(token);
+        }
+        let response = crate::http::send(request)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if let Some(err) = rate_limit_error(&response) {
+            return Err(err);
+        }
+        crate::http::text(response.error_for_status()?).map(Some)
+    })?;
+    let Some(body) = body else {
         return Ok(None);
-    }
-    if let Some(err) = rate_limit_error(&response) {
-        return Err(err);
-    }
-    let body = response.error_for_status()?.text()?;
+    };
     let entry: RawRelease = serde_json::from_str(&body)?;
     Ok(Some(into_nightly(entry)))
 }

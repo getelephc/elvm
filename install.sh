@@ -22,17 +22,17 @@ main() {
 
     elvm_dir="${ELVM_DIR:-$HOME/.elvm}"
     target="$(detect_target)"
-    version="${ELVM_VERSION:-$(latest_version "$repo")}"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    trap 'exit 1' HUP INT TERM
+    version="${ELVM_VERSION:-$(latest_version "$repo" "$tmp/latest.json")}"
     tarball="elvm-v${version}-${target}.tar.gz"
     base="https://github.com/${repo}/releases/download/v${version}"
 
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-
     say "downloading elvm ${version} for ${target}"
-    curl -fsSL "${base}/${tarball}" -o "${tmp}/${tarball}" \
+    fetch_file "${base}/${tarball}" "${tmp}/${tarball}" 1 \
         || err "could not download ${base}/${tarball}"
-    curl -fsSL "${base}/${tarball}.sha256" -o "${tmp}/${tarball}.sha256" \
+    fetch_file "${base}/${tarball}.sha256" "${tmp}/${tarball}.sha256" 0 \
         || err "could not download ${base}/${tarball}.sha256"
 
     verify "$tmp" "$tarball"
@@ -98,10 +98,87 @@ detect_target() {
     esac
 }
 
+# Keep retries on files: stdout cannot be rewound after a partial response.
+# A subshell keeps these variables separate from the installer's state.
+fetch_file() {
+    (
+        url="$1"
+        output="$2"
+        resume="$3"
+        attempt=1
+        backoff=1
+        while :; do
+            set -- -fsSL --connect-timeout 10 --speed-limit 1 --speed-time 30 \
+                -D "$output.headers" -w '%{http_code}' -o "$output"
+            if [ "$resume" -eq 1 ]; then
+                set -- "$@" -C -
+            else
+                set -- "$@" --max-time 60
+            fi
+            if status="$(curl "$@" "$url")"; then
+                # curl can report success for 416 while leaving an incomplete file.
+                [ "$status" = 416 ] || return 0
+                code=22
+            else
+                code="$?"
+            fi
+            case "$code" in
+                22)
+                    case "$status" in
+                        408|429|5??) ;;
+                        416)
+                            [ "$resume" -eq 1 ] || return "$code"
+                            rm -f "$output" || return 1
+                            ;;
+                        *) return "$code" ;;
+                    esac
+                    ;;
+                33|36)
+                    [ "$resume" -eq 1 ] && [ -s "$output" ] || return "$code"
+                    rm -f "$output" || return 1
+                    ;;
+                6|7|16|18|28|35|52|55|56|92) ;;
+                *) return "$code" ;;
+            esac
+            [ "$attempt" -lt 6 ] || return "$code"
+            delay="$backoff"
+            if [ -f "$output.headers" ]; then
+                retry_after="$(tr -d '\r' < "$output.headers" | awk '
+                    /^HTTP\// { value="" }
+                    tolower($1) == "retry-after:" { $1=""; sub(/^ /, ""); value=$0 }
+                    END { print value }')"
+                case "$retry_after" in
+                    '') ;;
+                    *[!0-9]*)
+                        retry_at="$(LC_ALL=C date -d "$retry_after" +%s 2>/dev/null \
+                            || LC_ALL=C date -j -f '%a, %d %b %Y %H:%M:%S GMT' "$retry_after" +%s 2>/dev/null \
+                            || true)"
+                        if [ -n "$retry_at" ]; then
+                            delay=$((retry_at - $(date +%s)))
+                            [ "$delay" -ge 0 ] || delay=0
+                        fi
+                        ;;
+                    *) delay="$retry_after" ;;
+                esac
+            fi
+            # Do not retry before the server permits it or wait indefinitely.
+            if [ "${#delay}" -gt 2 ] || [ "$delay" -gt 60 ]; then
+                say "server requested a longer wait; please try again later"
+                return "$code"
+            fi
+            say "download failed; retrying in ${delay}s (attempt $((attempt + 1))/6)"
+            sleep "$delay"
+            attempt=$((attempt + 1))
+            backoff=$((backoff * 2))
+        done
+    )
+}
+
 latest_version() {
     repo="$1"
-    json="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest")" \
+    fetch_file "https://api.github.com/repos/${repo}/releases/latest" "$2" 0 \
         || err "could not reach the GitHub API to find the latest elvm version"
+    json="$(cat "$2")"
     version="$(printf '%s' "$json" | sed -n 's/.*"tag_name" *: *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)"
     [ -n "$version" ] || err "could not determine the latest elvm version"
     printf '%s' "$version"

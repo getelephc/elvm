@@ -168,7 +168,7 @@ done
 
 case "$url" in
   *releases/latest*)
-    printf '{{"tag_name": "v0.1.0"}}\n'
+    printf '{{"tag_name": "v0.1.0"}}\n' > "$output"
     exit 0
     ;;
   *.tar.gz)
@@ -340,7 +340,7 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$url" in
-  *releases/latest*) printf '{"tag_name": "v0.1.0"}\n' ;;
+  *releases/latest*) printf '{"tag_name": "v0.1.0"}\n' > "$output" ;;
   *.tar.gz) cp /fixtures/test.tar.gz "$output" ;;
   *.sha256) cp /fixtures/test.tar.gz.sha256 "$output" ;;
   *) echo "curl stub: unexpected url: $url" >&2; exit 1 ;;
@@ -448,4 +448,196 @@ fn base64_encode(data: &[u8]) -> String {
         result.push(if c4 < 64 { CHARS[c4] as char } else { '=' });
     }
     result
+}
+
+#[path = "support/http.rs"]
+mod test_http;
+
+#[test]
+fn installer_retries_real_curl_transfers_and_resumes_an_interrupted_archive() {
+    for range_status in [206, 200, 416] {
+        exercise_installer_transfer(range_status);
+    }
+}
+
+fn exercise_installer_transfer(range_status: u16) {
+    use flate2::{write::GzEncoder, Compression};
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    use test_http::{Reply, Server};
+
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let content = b"verified elvm binary";
+    let mut archive = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+    let mut header = tar::Header::new_gnu();
+    header.set_size(content.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, "elvm", &content[..])
+        .unwrap();
+    let archive = archive.into_inner().unwrap().finish().unwrap();
+    let digest = hex::encode(Sha256::digest(&archive));
+    let latest = br#"{"tag_name":"v0.1.0"}"#;
+    let mut replies = vec![
+        Reply::new(200, &latest[..7])
+            .path("/latest")
+            .header("Content-Length", latest.len()),
+        Reply::new(200, latest).path("/latest"),
+        Reply::new(200, &archive[..17])
+            .path("/archive")
+            .header("Content-Length", archive.len()),
+    ];
+    if range_status == 206 {
+        replies.push(
+            Reply::new(206, &archive[17..])
+                .path("/archive")
+                .range("bytes=17-")
+                .header(
+                    "Content-Range",
+                    format!("bytes 17-{}/{}", archive.len() - 1, archive.len()),
+                ),
+        );
+    } else {
+        replies.push(
+            Reply::new(range_status, &archive)
+                .path("/archive")
+                .range("bytes=17-"),
+        );
+        replies.push(Reply::new(200, &archive).path("/archive"));
+    }
+    replies.extend([
+        Reply::new(503, "unavailable")
+            .path("/checksum")
+            .header("Retry-After", "0"),
+        Reply::new(200, format!("{digest}  archive\n")).path("/checksum"),
+    ]);
+    let server = Server::start(replies);
+    // Rewrite only URLs; real curl handles Range and truncated bodies.
+    let curl = Command::new("sh")
+        .args(["-c", "command -v curl"])
+        .output()
+        .unwrap();
+    assert!(curl.status.success(), "curl must be installed");
+    let wrapper = bin.join("curl");
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+for arg in "$@"; do
+    shift
+    case "$arg" in
+        https://api.github.com/*) arg="$ELVM_TEST_UPSTREAM/latest" ;;
+        https://github.com/*.sha256) arg="$ELVM_TEST_UPSTREAM/checksum" ;;
+        https://github.com/*.tar.gz) arg="$ELVM_TEST_UPSTREAM/archive" ;;
+    esac
+    set -- "$@" "$arg"
+done
+exec "$ELVM_TEST_CURL" "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let sleep = bin.join("sleep");
+    std::fs::write(&sleep, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&sleep, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new("sh")
+        .args(["install.sh", "--no-modify-path"])
+        .env_remove("ELVM_VERSION")
+        .env("ELVM_DIR", dir.path().join("elvm"))
+        .env("HOME", dir.path())
+        .env("TMPDIR", dir.path())
+        .env("ELVM_TEST_UPSTREAM", &server.url)
+        .env(
+            "ELVM_TEST_CURL",
+            String::from_utf8(curl.stdout).unwrap().trim(),
+        )
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "range status {range_status}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("elvm/bin/elvm")).unwrap(),
+        content
+    );
+    // Only our bin and installation directories remain; staging and headers are removed.
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    server.finish();
+}
+
+#[test]
+fn installer_bounds_retries_and_preserves_an_existing_install_on_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    for (status, retry_after, expected_attempts) in [
+        (404, "", 1),
+        (503, "", 6),
+        (429, "3600", 1),
+        (429, "999999999999999999999999999", 1),
+        (429, "Fri, 01 Jan 2100 00:00:00 GMT", 1),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let staging = dir.path().join("staging");
+        let install = dir.path().join("elvm/bin");
+        for path in [&bin, &staging, &install] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(install.join("elvm"), "original binary").unwrap();
+        let curl = bin.join("curl");
+        std::fs::write(&curl, r#"#!/bin/sh
+output=""
+headers=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) output="$2"; shift ;;
+        -D) headers="$2"; shift ;;
+    esac
+    shift
+done
+printf 'attempt\n' >> "$ELVM_TEST_ATTEMPTS"
+printf 'partial download' > "$output"
+printf 'HTTP/1.1 %s Test\r\nRetry-After: %s\r\n\r\n' "$ELVM_TEST_STATUS" "$ELVM_TEST_RETRY_AFTER" > "$headers"
+printf '%s' "$ELVM_TEST_STATUS"
+exit 22
+"#).unwrap();
+        let sleep = bin.join("sleep");
+        std::fs::write(&sleep, "#!/bin/sh\nexit 0\n").unwrap();
+        for path in [&curl, &sleep] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let attempts = dir.path().join("attempts");
+        let output = Command::new("sh")
+            .args(["install.sh", "--no-modify-path"])
+            .env("ELVM_VERSION", "0.1.0")
+            .env("ELVM_DIR", dir.path().join("elvm"))
+            .env("HOME", dir.path())
+            .env("TMPDIR", &staging)
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("ELVM_TEST_ATTEMPTS", &attempts)
+            .env("ELVM_TEST_STATUS", status.to_string())
+            .env("ELVM_TEST_RETRY_AFTER", retry_after)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(
+            std::fs::read_to_string(attempts).unwrap().lines().count(),
+            expected_attempts
+        );
+        assert_eq!(
+            std::fs::read(install.join("elvm")).unwrap(),
+            b"original binary"
+        );
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
 }
