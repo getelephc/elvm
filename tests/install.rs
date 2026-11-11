@@ -900,3 +900,56 @@ fn a_successful_force_reinstall_replaces_the_working_install() {
     );
     assert!(!replaced_content.contains("fake-elephc 0.26.4"));
 }
+
+#[path = "support/http.rs"]
+mod test_http;
+
+#[test]
+fn install_recovers_from_temporary_api_errors_and_resumes_the_archive() {
+    use test_http::{Reply, Server};
+    let sandbox = Sandbox::new();
+    let archive = fake_release_tarball();
+    let digest = sha256_hex(&archive);
+    let name = format!("elephc-v0.26.4-{}.tar.gz", elvm_target());
+    let server = Server::with_url(|url| {
+        let releases = serde_json::json!([{
+            "tag_name": "v0.26.4", "assets": [
+                {"name": name, "browser_download_url": format!("{url}/archive")},
+                {"name": format!("{name}.sha256"), "browser_download_url": format!("{url}/checksum")}
+            ]
+        }]).to_string();
+        vec![
+            Reply::new(503, "unavailable").header("Retry-After", "0"),
+            Reply::new(200, releases),
+            Reply::new(200, format!("{digest}  {name}\n")),
+            Reply::new(200, &archive[..17]).header("Content-Length", archive.len()),
+            Reply::new(206, &archive[17..]).range("bytes=17-").header(
+                "Content-Range",
+                format!("bytes 17-{}/{}", archive.len() - 1, archive.len()),
+            ),
+        ]
+    });
+    Command::cargo_bin("elvm")
+        .unwrap()
+        .args(["install", "0.26.4"])
+        .env("ELVM_DIR", sandbox.elvm_dir())
+        .env("HOME", sandbox.home())
+        .env("ELVM_TARGET", elvm_target())
+        .env("ELVM_GITHUB_API", &server.url)
+        .env_remove("ELEPHC_VERSION")
+        .current_dir(sandbox.home())
+        .assert()
+        .success();
+    assert!(sandbox.elvm_dir().join("versions/0.26.4/elephc").is_file());
+    assert_eq!(
+        std::fs::read(sandbox.elvm_dir().join("cache/downloads").join(name)).unwrap(),
+        archive
+    );
+    assert_eq!(
+        std::fs::read_dir(sandbox.elvm_dir().join("cache/downloads"))
+            .unwrap()
+            .count(),
+        1
+    );
+    server.finish();
+}

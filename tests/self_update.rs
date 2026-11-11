@@ -138,3 +138,54 @@ fn self_update_leaves_the_existing_binary_when_the_checksum_does_not_match() {
         b"original elvm binary\n".to_vec()
     );
 }
+
+#[path = "support/http.rs"]
+mod test_http;
+
+#[test]
+fn self_update_resumes_a_cached_partial_from_a_previous_run() {
+    use test_http::{Reply, Server};
+    let sandbox = Sandbox::new();
+    let content = b"resumed elvm binary";
+    let archive = fake_elvm_tarball(content);
+    let digest = sha256_hex(&archive);
+    let name = format!("elvm-v99.0.0-{ELVM_TARGET}.tar.gz");
+    let downloads = sandbox.elvm_dir().join("cache/downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let partial = downloads.join(format!("{name}.{digest}.part"));
+    std::fs::write(&partial, &archive[..17]).unwrap();
+    std::fs::write(sandbox.elvm_dir().join("bin/elvm"), "original").unwrap();
+    let server = Server::with_url(|url| {
+        let release = serde_json::json!({
+            "tag_name": "v99.0.0", "assets": [
+                {"name": name, "browser_download_url": format!("{url}/archive")},
+                {"name": format!("{name}.sha256"), "browser_download_url": format!("{url}/checksum")}
+            ]
+        }).to_string();
+        vec![
+            Reply::new(200, release),
+            Reply::new(200, format!("{digest}  {name}\n")),
+            Reply::new(206, &archive[17..]).range("bytes=17-").header(
+                "Content-Range",
+                format!("bytes 17-{}/{}", archive.len() - 1, archive.len()),
+            ),
+        ]
+    });
+    Command::cargo_bin("elvm")
+        .unwrap()
+        .arg("self-update")
+        .env("ELVM_DIR", sandbox.elvm_dir())
+        .env("HOME", sandbox.home())
+        .env("ELVM_TARGET", ELVM_TARGET)
+        .env("ELVM_GITHUB_API", &server.url)
+        .current_dir(sandbox.home())
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read(sandbox.elvm_dir().join("bin/elvm")).unwrap(),
+        content
+    );
+    assert_eq!(std::fs::read(downloads.join(name)).unwrap(), archive);
+    assert!(!partial.exists());
+    server.finish();
+}

@@ -5,6 +5,7 @@ mod commands;
 mod download;
 mod errors;
 mod github;
+mod http;
 mod install;
 mod installed;
 mod lock;
@@ -15,6 +16,10 @@ mod shim;
 mod table;
 mod target;
 mod version;
+
+#[cfg(test)]
+#[path = "../tests/support/http.rs"]
+mod test_http;
 
 use std::ffi::OsString;
 use std::path::Path;

@@ -104,6 +104,20 @@ macOS ARM64 only. Wherever a binary isn't published, build from source:
 
     elvm install --build v0.26.4    # requires Rust and git
 
+## Unreliable connections
+
+Network requests retry temporary failures up to five times with increasing
+waits. Connection and stalled-transfer timeouts prevent downloads from hanging;
+slow downloads can continue while they are making progress. Permanent HTTP
+errors, such as a missing release, fail immediately.
+
+Compiler installs and self-updates keep partial archives in
+`~/.elvm/cache/downloads`, resuming them on the next attempt or invocation when
+the server supports it. Servers without resume support trigger a fresh download.
+Only archives with a matching SHA-256 checksum enter the completed cache. Run
+`elvm cache clean` to discard cached archives and partial downloads. The shell
+installer resumes within its current run and cleans its temporary files on exit.
+
 ## License
 
 MIT

@@ -40,10 +40,11 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
 
     let expected = download::parse_checksum_file(&download::fetch_text(&sha_url)?)?;
     paths.ensure_dirs()?;
+    let _lock = crate::lock::InstallLock::acquire(paths)?;
     let staging = tempfile::Builder::new()
         .prefix("selfupdate")
         .tempdir_in(paths.tmp())?;
-    let archive = staging.path().join(&tarball);
+    let archive = paths.downloads().join(&tarball);
     download::fetch_verified(&tar_url, &expected, &archive)?;
     crate::archive::extract_tar_gz(&archive, staging.path())?;
 

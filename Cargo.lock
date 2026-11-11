@@ -603,6 +603,7 @@ dependencies = [
  "flate2",
  "fs2",
  "hex",
+ "httpdate",
  "httpmock",
  "indicatif",
  "predicates",
