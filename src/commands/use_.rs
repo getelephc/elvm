@@ -1,4 +1,5 @@
 use crate::installed::Installed;
+use crate::main_build;
 use crate::paths::ElvmPaths;
 use crate::resolve::VERSION_FILE;
 use crate::version::VersionRequest;
@@ -27,6 +28,13 @@ pub fn run(paths: &ElvmPaths, raw: &str, global: bool) -> anyhow::Result<()> {
                 "warning: nightly moves; committing it to {VERSION_FILE} does not pin a compiler"
             );
             eprintln!("  for a build that will not change, pin a dated one: elvm ls-remote");
+        }
+        if name == main_build::CHANNEL
+            && main_build::Stamp::read(&paths.version_dir(&name)).is_some()
+        {
+            eprintln!(
+                "warning: main moves; installations selected by {VERSION_FILE} can differ between machines"
+            );
         }
         let (cwd, _) = super::context()?;
         cwd.join(VERSION_FILE)

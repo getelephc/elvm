@@ -1,4 +1,6 @@
 use crate::installed;
+use crate::lock::InstallLock;
+use crate::main_build;
 use crate::paths::ElvmPaths;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +37,9 @@ pub fn run(paths: &ElvmPaths, raw_path: &str, name: &str) -> anyhow::Result<()> 
     }
 
     paths.ensure_dirs()?;
+    let _lock = (name == main_build::CHANNEL)
+        .then(|| InstallLock::acquire(paths))
+        .transpose()?;
     let link = paths.version_dir(name);
     if link.exists() || std::fs::symlink_metadata(&link).is_ok() {
         anyhow::bail!("{name} already exists; remove it with: elvm uninstall {name}");

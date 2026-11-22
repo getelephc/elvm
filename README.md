@@ -41,7 +41,8 @@ new shell for the `PATH` to update.
 ## Use
 
     elvm install 0.26.4        # install a specific version
-    elvm install nightly       # install the newest build of main
+    elvm install nightly       # install the newest published nightly
+    elvm install main          # install the latest complete development build from CI
     elvm use 0.26.4            # pin it for this project (.elephc-version)
     elvm use 0.26.4 --global   # set the default
     elvm ls                    # what is installed
@@ -70,7 +71,7 @@ command installs it.
 elephc publishes unattended builds of `main` as pre-releases. They are not
 supported: no compatibility, stability, or upgrade guarantees.
 
-    elvm install nightly       # the newest build of main
+    elvm install nightly       # the newest published nightly
     elvm install nightly-20260901   # one specific build
 
 `nightly` is a channel, not a version. Installing it again is an update, not
@@ -93,6 +94,20 @@ after that, only someone who already has it installed — or still has the
 tarball in `~/.elvm/cache/downloads` — can reinstall it. Pin a release for
 anything that has to build a year from now.
 
+## Main builds
+
+`elvm install main` installs the latest complete development build from the
+elephc GitHub Actions artifacts. Install [GitHub CLI](https://cli.github.com/)
+and sign in with `gh auth login` before downloading.
+
+    elvm install main
+    elvm exec main --version
+
+Run `elvm install main` again to update. `elvm ls` shows the installed commit
+and build profile. Since `main` moves, pin a release for reproducible builds.
+The current CI builds use the debug profile, and their Linux binaries require
+glibc 2.39 or newer.
+
 ## Platform support
 
 Which platforms have a downloadable binary is a property of each elephc
@@ -111,7 +126,7 @@ waits. Connection and stalled-transfer timeouts prevent downloads from hanging;
 slow downloads can continue while they are making progress. Permanent HTTP
 errors, such as a missing release, fail immediately.
 
-Compiler installs and self-updates keep partial archives in
+Release and nightly installs and self-updates keep partial archives in
 `~/.elvm/cache/downloads`, resuming them on the next attempt or invocation when
 the server supports it. Servers without resume support trigger a fresh download.
 Only archives with a matching SHA-256 checksum enter the completed cache. Run

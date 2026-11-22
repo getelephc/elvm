@@ -14,8 +14,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Install a version, or `nightly`. With no argument, read .elephc-version.
+    /// Install a version, `nightly`, or `main`. With no argument, read .elephc-version.
     Install {
+        /// Version or channel. `main` downloads a CI build and requires `gh auth login`.
         #[arg(conflicts_with = "build")]
         version: Option<String>,
         /// Build from source at a tag, branch, or commit instead of downloading.

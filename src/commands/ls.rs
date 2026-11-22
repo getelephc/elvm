@@ -1,11 +1,10 @@
 use crate::installed::{self, Installed};
+use crate::main_build;
 use crate::nightly::Stamp;
 use crate::paths::ElvmPaths;
 use crate::table;
 
-/// Column headings for the installed listing. `BUILD` and `PUBLISHED` are
-/// filled only by nightlies — a released version is fully identified by its
-/// name — so both columns disappear when no nightly is installed.
+/// Build details appear for nightly and main installations.
 const HEADERS: [&str; 4] = ["VERSION", "BUILD", "PUBLISHED", "NOTE"];
 
 pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
@@ -30,6 +29,9 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
             // written at install time is what makes the listing mean
             // anything.
             let stamp = Stamp::read(&dir);
+            let main = (name == main_build::CHANNEL)
+                .then(|| main_build::Stamp::read(&dir))
+                .flatten();
             let mut notes = Vec::new();
             if Some(&name) == active.as_ref() {
                 notes.push("active");
@@ -42,10 +44,12 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
                 stamp
                     .as_ref()
                     .map(|s| s.version.clone())
+                    .or_else(|| main.as_ref().map(main_build::Stamp::summary))
                     .unwrap_or_default(),
                 stamp
                     .as_ref()
                     .map(|s| s.published_date().to_string())
+                    .or_else(|| main.as_ref().map(|s| s.date().to_string()))
                     .unwrap_or_default(),
                 notes.join(", "),
             ]

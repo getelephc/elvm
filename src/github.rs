@@ -17,7 +17,7 @@ pub struct Asset {
 }
 
 const DEFAULT_API: &str = "https://api.github.com";
-const REPO: &str = "illegalstudio/elephc";
+pub const REPO: &str = "illegalstudio/elephc";
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Deserialize)]

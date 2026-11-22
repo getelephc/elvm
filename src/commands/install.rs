@@ -1,5 +1,6 @@
 use crate::github;
 use crate::install;
+use crate::main_build;
 use crate::paths::ElvmPaths;
 use crate::version::VersionRequest;
 
@@ -24,6 +25,10 @@ pub fn run(paths: &ElvmPaths, version: Option<&str>, force: bool) -> anyhow::Res
             request.raw
         }
     };
+
+    if raw.trim() == main_build::CHANNEL {
+        return main_build::install(paths, force);
+    }
 
     let request = VersionRequest::parse(&raw);
     // Routed before the release list is fetched: a nightly is addressed by

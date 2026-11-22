@@ -162,7 +162,7 @@ fn copy_response(
 }
 
 /// The SHA-256 of `path`'s contents, or `None` if it does not exist yet.
-fn hash_file(path: &Path) -> anyhow::Result<Option<String>> {
+pub fn hash_file(path: &Path) -> anyhow::Result<Option<String>> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),

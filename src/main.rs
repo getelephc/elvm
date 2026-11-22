@@ -9,6 +9,7 @@ mod http;
 mod install;
 mod installed;
 mod lock;
+mod main_build;
 mod nightly;
 mod paths;
 mod resolve;

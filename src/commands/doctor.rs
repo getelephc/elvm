@@ -1,4 +1,5 @@
 use crate::installed::{self, Installed, BRIDGE_ARCHIVES};
+use crate::main_build;
 use crate::nightly::{self, Channel, Stamp};
 use crate::paths::ElvmPaths;
 use crate::target;
@@ -98,6 +99,9 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
         .chain(installed.aliases.iter().cloned())
     {
         let dir = paths.version_dir(&name);
+        let main = (name == main_build::CHANNEL)
+            .then(|| main_build::Stamp::read(&dir))
+            .flatten();
         if installed::is_complete(&dir) {
             println!("✓ {name} complete");
         } else {
@@ -116,13 +120,19 @@ pub fn run(paths: &ElvmPaths) -> anyhow::Result<()> {
             // created by `elvm link` has no published artifact to reinstall
             // from, so `elvm install dev --force` fails with "no published
             // elephc release matches dev".
-            if semver::Version::parse(&name).is_ok() || Channel::parse(&name).is_some() {
+            if semver::Version::parse(&name).is_ok()
+                || Channel::parse(&name).is_some()
+                || main.is_some()
+            {
                 println!("  reinstall with: elvm install {name} --force");
             } else {
                 println!(
                     "  re-link it: elvm link <path> --as {name}  (or remove it: elvm uninstall {name})"
                 );
             }
+        }
+        if let Some(stamp) = main {
+            println!("  {}", stamp.summary());
         }
         if let Some(stamp) = Stamp::read(&dir) {
             println!("  {}", stamp.summary());

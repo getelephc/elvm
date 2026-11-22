@@ -1,8 +1,13 @@
 use crate::installed::Installed;
+use crate::lock::InstallLock;
+use crate::main_build;
 use crate::paths::ElvmPaths;
 use crate::version::VersionRequest;
 
 pub fn run(paths: &ElvmPaths, raw: &str) -> anyhow::Result<()> {
+    let _lock = (raw.trim() == main_build::CHANNEL)
+        .then(|| InstallLock::acquire(paths))
+        .transpose()?;
     let installed = Installed::scan(paths)?;
     let name = installed
         .resolve_name(&VersionRequest::parse(raw))
